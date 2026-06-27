@@ -1,0 +1,691 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from mint_cli import workflow
+from mint_cli.renderer import ScriptedModelClient
+
+
+# --------------------------------------------------------------------------- #
+# deterministic, multi-module lifecycle
+# --------------------------------------------------------------------------- #
+
+
+def test_render_top_module_renders_requirements_first(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    status, output = workflow.render_module("tasklist")
+    assert status == 0, output
+    # taskstore (required) appears before tasklist in the output.
+    assert output.index("RENDER taskstore") < output.index("RENDER tasklist")
+    assert "Completed FR1" in output and "Completed FR2" in output
+
+    # Both modules produced their own nested git repo + metadata.
+    for module in ("taskstore", "tasklist"):
+        meta = demo_project.metadata(module)
+        assert meta["lastSuccessfulUnitId"] == "FR2"
+        assert (demo_project.root / "generated" / module / ".git").is_dir()
+        assert meta["functionalUnits"][0]["finishedCommit"]
+
+
+def test_second_render_is_noop(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    assert workflow.render_module("tasklist")[0] == 0
+    status, output = workflow.render_module("tasklist")
+    assert status == 0
+    assert "NOOP taskstore" in output and "NOOP tasklist" in output
+
+
+def test_metadata_records_hashes_attempts_commits(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("tasklist")
+    meta = demo_project.metadata("tasklist")
+    assert meta["specHash"] and meta["nonFunctionalSpecHash"]
+    assert meta["importedContextHash"] and meta["requiredModuleCodeHash"]
+    assert meta["provider"] == "local"
+    fr1 = meta["functionalUnits"][0]
+    assert fr1["attempts"] == {
+        "implementation": 1,
+        "unit": 1,
+        "conformance": 1,
+        "testQuality": 1,
+    }
+    assert fr1["beforeCommit"] and fr1["finishedCommit"]
+    assert fr1["renderer"] == "deterministic"
+    assert fr1["testQuality"]["status"] == "passed"
+    quality_attempt = (
+        demo_project.root
+        / "generated"
+        / "tasklist"
+        / ".mintgen"
+        / "attempts"
+        / "FR1"
+        / "test-quality-1.json"
+    )
+    quality_data = json.loads(quality_attempt.read_text())
+    assert quality_data["classification"] == "passed"
+    assert quality_data["testQuality"]["coverage"]["percent"] >= 60
+
+
+def test_editing_later_unit_rerenders_only_that_slice(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("tasklist")
+    before = demo_project.metadata("tasklist")
+    fr1_commit = before["functionalUnits"][0]["finishedCommit"]
+    fr2_commit = before["functionalUnits"][1]["finishedCommit"]
+
+    # Edit FR2 spec text only.
+    spec = demo_project.spec_path("tasklist")
+    spec.write_text(
+        spec.read_text().replace(
+            "Tasks appear in the order they were added.",
+            "Tasks appear in the exact order they were added.",
+        ),
+        encoding="utf-8",
+    )
+
+    status, output = workflow.render_module("tasklist")
+    assert status == 0, output
+    assert "Range: FR2:FR2" in output
+    assert "functional unit changed: FR2" in output
+
+    after = demo_project.metadata("tasklist")
+    # FR1 checkpoint preserved, FR2 re-rendered (new commit).
+    assert after["functionalUnits"][0]["finishedCommit"] == fr1_commit
+    assert after["functionalUnits"][1]["finishedCommit"] != fr2_commit
+
+
+def test_editing_required_module_cascades_to_dependent(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("tasklist")
+    before = demo_project.metadata("tasklist")["requiredModuleCodeHash"]
+
+    spec = demo_project.spec_path("taskstore")
+    spec.write_text(
+        spec.read_text().replace(
+            "`TaskStore.list_tasks()` returns all stored Tasks.",
+            "`TaskStore.list_tasks()` returns all stored Tasks in a list.",
+        ),
+        encoding="utf-8",
+    )
+
+    status, output = workflow.render_module("tasklist")
+    assert status == 0, output
+    # taskstore re-renders the changed unit, then tasklist re-renders because the
+    # required module's generated code hash moved.
+    assert "RENDER taskstore" in output
+    assert "required module code changed" in output
+    after = demo_project.metadata("tasklist")["requiredModuleCodeHash"]
+    assert after != before
+
+
+def test_force_rerenders_all(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("tasklist")
+    status, output = workflow.render_module("taskstore", force=True)
+    assert status == 0
+    assert "forced render" in output
+    assert "Range: FR1:FR2" in output
+
+
+def test_range_renders_subset(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("taskstore")
+    status, output = workflow.render_module("taskstore", unit_range="FR2:FR2")
+    assert status == 0
+    assert "explicit range" in output
+    assert "Range: FR2:FR2" in output
+
+
+def test_prior_conformance_runs_as_regression(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("taskstore")
+    # The conformance attempt for FR2 must have collected FR1 + FR2 (regression).
+    attempt = (
+        demo_project.root
+        / "generated"
+        / "taskstore"
+        / ".mintgen"
+        / "attempts"
+        / "FR2"
+        / "conformance-1.json"
+    )
+    data = json.loads(attempt.read_text())
+    stdout = (demo_project.root / "generated" / "taskstore" / data["stdoutPath"]).read_text()
+    assert "2 passed" in stdout
+
+
+def test_caches_kept_out_of_checkpoint(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("taskstore")
+    gen = demo_project.root / "generated" / "taskstore"
+    assert not list(gen.rglob("__pycache__"))
+    assert not list(gen.rglob("*.pyc"))
+
+
+# --------------------------------------------------------------------------- #
+# clean / inspect / status / parse / healthcheck
+# --------------------------------------------------------------------------- #
+
+
+def test_clean_requires_yes(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("taskstore")
+    status, output = workflow.clean_module("taskstore", yes=False)
+    assert status == 1 and "--yes" in output
+    assert (demo_project.root / "generated" / "taskstore").exists()
+
+    status, output = workflow.clean_module("taskstore", yes=True)
+    assert status == 0 and "Removed" in output
+    assert not (demo_project.root / "generated" / "taskstore").exists()
+
+
+def test_inspect_shows_record_and_attempts(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("taskstore")
+    status, output = workflow.inspect_unit("taskstore", "FR1")
+    assert status == 0
+    assert "Unit: FR1" in output
+    assert "status: passed" in output
+    assert "unit attempt=1" in output and "conformance attempt=1" in output
+
+
+def test_status_suggests_render_when_changed(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    workflow.render_module("taskstore")
+    out = workflow.status_module("taskstore")
+    assert "Suggested render: no-op" in out
+
+    spec = demo_project.spec_path("taskstore")
+    spec.write_text(spec.read_text().replace("Buy milk", "Buy bread"), encoding="utf-8")
+    out = workflow.status_module("taskstore")
+    assert "--from FR1" in out
+
+
+def test_parse_emits_ir_with_imports_requires(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    ir = json.loads(workflow.parse_module("tasklist"))
+    assert ir["module"] == "tasklist"
+    assert ir["requires"] == ["taskstore"]
+    assert ir["imports"] == ["taskstore"]
+
+
+def test_healthcheck_flags_non_executable_script(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    (demo_project.root / "test_scripts" / "run_unit_tests.sh").chmod(0o644)
+    status, output = workflow.healthcheck_module("taskstore")
+    assert status == 1
+    assert "not executable" in output and "chmod +x" in output
+
+
+def test_healthcheck_flags_missing_required_spec(make_project, monkeypatch):
+    project = make_project()
+    project.write_spec(
+        "lonely",
+        """---
+module: lonely
+description: needs a missing module
+imports: []
+requires: [ghost]
+stack: python-lib
+template: taskstore
+---
+
+## definitions
+- X: y.
+## implementation
+- Use Python 3.12.
+## test
+- pytest.
+## functional
+- id: FR1
+  title: t
+  spec:
+    - s.
+  acceptance:
+    - a.
+""",
+    )
+    monkeypatch.chdir(project.root)
+    status, output = workflow.healthcheck_module("lonely")
+    assert status == 1
+    assert "ghost" in output
+
+
+def test_new_module_scaffolds_parseable_spec(make_project):
+    project = make_project()
+    status, output = workflow.new_module("calc-cli", requires=["taskstore"], root=project.root)
+
+    assert status == 0, output
+    assert "specs/calc-cli.mint.md" in output
+    text = project.spec_path("calc-cli").read_text(encoding="utf-8")
+    assert "requires: [taskstore]" in text
+    spec = workflow.parse_spec_file(project.spec_path("calc-cli"))
+    assert spec.module == "calc-cli"
+    assert spec.requires == ["taskstore"]
+
+
+def test_lint_flags_vague_acceptance(make_project):
+    project = make_project()
+    project.write_spec(
+        "weak",
+        """---
+module: weak
+description: weak spec
+imports: []
+requires: []
+stack: python-lib
+---
+
+## definitions
+- Thing: a thing.
+## implementation
+- Use Python 3.12.
+## test
+- pytest.
+## functional
+- id: FR1
+  title: vague
+  spec:
+    - Do a useful thing.
+  acceptance:
+    - It works properly.
+""",
+    )
+
+    status, output = workflow.lint_module("weak", root=project.root)
+
+    assert status == 1
+    assert "vague" in output
+    assert "no testable assertion" in output
+
+
+def test_doctor_passes_for_demo_project(demo_project):
+    status, output = workflow.doctor_project(root=demo_project.root)
+
+    assert status == 0, output
+    assert "PASS doctor" in output
+    assert "Spec: specs/taskstore.mint.md" in output
+
+
+def test_render_writes_run_report_and_report_command_reads_it(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    status, output = workflow.render_module("taskstore")
+    assert status == 0, output
+
+    report_path = demo_project.root / "generated" / "taskstore" / ".mintgen" / "reports" / "latest.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["module"] == "taskstore"
+    assert report["totals"]["attempts"] >= 4
+    assert report["units"][0]["wallClockSeconds"] is not None
+    assert "tokens" in report["units"][0]
+    assert report["units"][0]["testQuality"]["status"] == "passed"
+
+    status, output = workflow.report_module("taskstore")
+    assert status == 0
+    assert "RUN REPORT taskstore" in output
+    assert "Report JSON: generated/taskstore/.mintgen/reports/latest.json" in output
+
+
+# --------------------------------------------------------------------------- #
+# model renderer path (offline, scripted) — retry & no-tests gate
+# --------------------------------------------------------------------------- #
+
+CALC_SPEC = """---
+module: calc
+description: tiny adder
+imports: []
+requires: []
+stack: python-lib
+---
+
+## definitions
+- Add: adds two integers.
+## implementation
+- Provide add(a, b) in the calc package.
+## test
+- pytest unit and conformance tests.
+## functional
+- id: FR1
+  title: add returns the sum
+  spec:
+    - add(a, b) returns a + b.
+  acceptance:
+    - add(2, 3) == 5 and add(10, 5) == 15.
+"""
+
+CALC_TWO_UNIT_SPEC = """---
+module: calc
+description: tiny arithmetic
+imports: []
+requires: []
+stack: python-lib
+---
+
+## definitions
+- Add: adds two integers.
+- Subtract: subtracts one integer from another.
+## implementation
+- Provide add(a, b) and sub(a, b) in the calc package.
+## test
+- pytest unit and conformance tests.
+## functional
+- id: FR1
+  title: add returns the sum
+  spec:
+    - add(a, b) returns a + b.
+  acceptance:
+    - add(2, 3) == 5 and add(10, 5) == 15.
+- id: FR2
+  title: sub returns the difference
+  spec:
+    - sub(a, b) returns a - b.
+  acceptance:
+    - sub(10, 3) == 7 and sub(5, 8) == -3.
+"""
+
+_CONFTEST = (
+    "import sys\nfrom pathlib import Path\n"
+    "sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))\n"
+)
+
+
+def calc_patch(add_body: str, *, with_tests: bool = True, weak_tests: bool = False) -> str:
+    unit_test = (
+        "def test_placeholder():\n    assert True\n"
+        if weak_tests
+        else "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+    conformance_test = (
+        "def test_placeholder_conf():\n    assert True\n"
+        if weak_tests
+        else "from calc import add\n\n\ndef test_add_conf():\n    assert add(10, 5) == 15\n"
+    )
+    files = [
+        {
+            "path": "src/calc/__init__.py",
+            "action": "write",
+            "contents": f"def add(a, b):\n    return {add_body}\n",
+        },
+        {"path": "tests/conftest.py", "action": "write", "contents": _CONFTEST},
+        {
+            "path": "FR1/test_fr1.py",
+            "action": "write",
+            "contents": conformance_test,
+            "root": "conformance",
+        },
+    ]
+    if with_tests:
+        files.append(
+            {
+                "path": "tests/test_fr1.py",
+                "action": "write",
+                "contents": unit_test,
+            }
+        )
+    return json.dumps({"summary": "calc render", "files": files})
+
+
+def calc_two_unit_patch(unit: str) -> str:
+    if unit == "FR1":
+        source = "def add(a, b):\n    return a + b\n"
+        files = [
+            {
+                "path": "src/calc/__init__.py",
+                "action": "write",
+                "contents": source,
+            },
+            {"path": "tests/conftest.py", "action": "write", "contents": _CONFTEST},
+            {
+                "path": "tests/test_fr1.py",
+                "action": "write",
+                "contents": "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+            },
+            {
+                "path": "FR1/test_fr1.py",
+                "action": "write",
+                "contents": "from calc import add\n\n\ndef test_add_conf():\n    assert add(10, 5) == 15\n",
+                "root": "conformance",
+            },
+        ]
+    else:
+        source = "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n"
+        files = [
+            {
+                "path": "src/calc/__init__.py",
+                "action": "write",
+                "contents": source,
+            },
+            {
+                "path": "tests/test_fr2.py",
+                "action": "write",
+                "contents": "from calc import sub\n\n\ndef test_sub():\n    assert sub(10, 3) == 7\n",
+            },
+            {
+                "path": "FR2/test_fr2.py",
+                "action": "write",
+                "contents": "from calc import sub\n\n\ndef test_sub_conf():\n    assert sub(5, 8) == -3\n",
+                "root": "conformance",
+            },
+        ]
+    return json.dumps({"summary": f"calc {unit}", "files": files})
+
+
+def make_calc_project(make_project, provider="model"):
+    project = make_project(provider=provider, model="mock-model")
+    project.write_spec("calc", CALC_SPEC)
+    return project
+
+
+def make_calc_two_unit_project(make_project):
+    project = make_project(provider="model", model="mock-model")
+    project.write_spec("calc", CALC_TWO_UNIT_SPEC)
+    return project
+
+
+def set_limit(project, key: str, value: int) -> None:
+    path = project.root / "mint.yaml"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(f"{key}: 0", f"{key}: {value}")
+    path.write_text(text, encoding="utf-8")
+
+
+def test_model_renderer_unit_retry_with_feedback(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    monkeypatch.chdir(project.root)
+    # Attempt 1: wrong impl (a - b) -> unit test fails. Attempt 2: correct.
+    client = ScriptedModelClient(
+        {
+            "FR1:unit:1": calc_patch("a - b"),
+            "FR1:unit:2": calc_patch("a + b"),
+        }
+    )
+    status, output = workflow.render_module("calc", model_client=client)
+    assert status == 0, output
+    assert ("FR1", "unit", 1) in client.calls and ("FR1", "unit", 2) in client.calls
+    meta = project.metadata("calc")
+    assert meta["functionalUnits"][0]["attempts"]["unit"] == 2
+    assert meta["model"] == "mock-model"
+    # Both attempts left an audit trail.
+    attempts = project.root / "generated" / "calc" / ".mintgen" / "attempts" / "FR1"
+    assert (attempts / "unit-1.prompt.txt").exists()
+    assert (attempts / "unit-1.response.txt").exists()
+    assert (attempts / "unit-2.patch.json").exists()
+    attempt_data = json.loads((attempts / "unit-1.json").read_text())
+    assert attempt_data["cassetteId"]
+    assert meta["functionalUnits"][0]["testQuality"]["status"] == "passed"
+
+
+def test_model_renderer_patch_validation_retry_with_feedback(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient(
+        {
+            "FR1:unit:1": json.dumps({"summary": "bad", "files": []}),
+            "FR1:unit:2": calc_patch("a + b"),
+        }
+    )
+
+    status, output = workflow.render_module("calc", model_client=client)
+
+    assert status == 0, output
+    assert ("FR1", "unit", 1) in client.calls
+    assert ("FR1", "unit", 2) in client.calls
+    attempts = project.root / "generated" / "calc" / ".mintgen" / "attempts" / "FR1"
+    first = json.loads((attempts / "unit-1.json").read_text())
+    assert first["classification"] == "patch_invalid"
+    assert "non-empty 'files'" in first["patchValidationError"]
+    retry_prompt = (attempts / "unit-2.prompt.txt").read_text()
+    assert "previous response did not satisfy the renderer patch contract" in retry_prompt
+
+
+def test_attempt_budget_aborts_with_report(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    set_limit(project, "maxRenderAttempts", 1)
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient({"default": calc_patch("a + b")})
+
+    status, output = workflow.render_module("calc", model_client=client)
+
+    assert status == 1
+    assert "Render budget exceeded" in output
+    assert "attempt budget exceeded" in output
+    report = json.loads(
+        (
+            project.root
+            / "generated"
+            / "calc"
+            / ".mintgen"
+            / "reports"
+            / "budget-abort.json"
+        ).read_text()
+    )
+    assert report["reason"] == "attempt budget exceeded (2/1)"
+    assert report["attempts"] == 2
+
+
+def test_token_budget_aborts_with_report(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    set_limit(project, "maxRenderTokensEstimate", 1)
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient({"default": calc_patch("a + b")})
+
+    status, output = workflow.render_module("calc", model_client=client)
+
+    assert status == 1
+    assert "Render budget exceeded" in output
+    assert "token budget exceeded" in output
+    report = json.loads(
+        (
+            project.root
+            / "generated"
+            / "calc"
+            / ".mintgen"
+            / "reports"
+            / "budget-abort.json"
+        ).read_text()
+    )
+    assert report["tokensEstimate"] > 1
+    assert report["maxTokensEstimate"] == 1
+
+
+def test_model_renderer_conformance_retry(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    monkeypatch.chdir(project.root)
+    # Unit passes on a constant impl (2+3 "==5" by luck) but conformance (10+5)
+    # fails, forcing a conformance-phase re-render that fixes it.
+    client = ScriptedModelClient(
+        {
+            "FR1:unit:1": calc_patch("5"),
+            "FR1:conformance:2": calc_patch("a + b"),
+        }
+    )
+    status, output = workflow.render_module("calc", model_client=client)
+    assert status == 0, output
+    assert ("FR1", "conformance", 2) in client.calls
+    meta = project.metadata("calc")
+    assert meta["functionalUnits"][0]["attempts"]["conformance"] == 2
+
+
+def test_aborted_render_resumes_from_last_good_checkpoint(make_project, monkeypatch):
+    project = make_calc_two_unit_project(make_project)
+    monkeypatch.chdir(project.root)
+    first_client = ScriptedModelClient({"FR1:unit:1": calc_two_unit_patch("FR1")})
+
+    status, output = workflow.render_module("calc", model_client=first_client)
+
+    assert status == 1
+    assert "Completed FR1" in output
+    assert "FAILED FR2" in output
+    meta = project.metadata("calc")
+    assert meta["lastSuccessfulUnitId"] == "FR1"
+    fr1_commit = meta["functionalUnits"][0]["finishedCommit"]
+
+    second_client = ScriptedModelClient({"FR2:unit:1": calc_two_unit_patch("FR2")})
+    status, output = workflow.render_module("calc", model_client=second_client)
+
+    assert status == 0, output
+    assert "Range: FR2:FR2" in output
+    assert "new functional unit FR2" in output
+    assert second_client.calls == [("FR2", "unit", 1)]
+    after = project.metadata("calc")
+    assert after["functionalUnits"][0]["finishedCommit"] == fr1_commit
+    assert after["functionalUnits"][1]["id"] == "FR2"
+
+
+def test_no_tests_discovered_fails(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    monkeypatch.chdir(project.root)
+    # Never ship a unit test -> the unit gate must fail, even though pytest exits 5.
+    client = ScriptedModelClient({"default": calc_patch("a + b", with_tests=False)})
+    status, output = workflow.render_module("calc", model_client=client)
+    assert status == 1
+    assert "No tests were discovered" in output
+
+
+def test_test_quality_gate_fails_shallow_tests(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient({"default": calc_patch("a + b", weak_tests=True)})
+
+    status, output = workflow.render_module("calc", model_client=client)
+
+    assert status == 1
+    assert "test-quality gate failed" in output
+    assert "acceptance criteria missing test references" in output
+    meta = project.metadata("calc")
+    record = meta["functionalUnits"][0]
+    assert record["status"] == "test_quality_failed"
+    assert record["testQuality"]["status"] == "failed"
+    attempt = (
+        project.root
+        / "generated"
+        / "calc"
+        / ".mintgen"
+        / "attempts"
+        / "FR1"
+        / "test-quality-1.json"
+    )
+    attempt_data = json.loads(attempt.read_text())
+    assert attempt_data["classification"] == "test_quality_failed"
+    assert attempt_data["testQuality"]["mutation"]["status"] == "failed"
+
+
+def test_unit_failure_after_retries_reports(make_calc_project_factory, monkeypatch):
+    project = make_calc_project_factory()
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient({"default": calc_patch("a - b")})  # always wrong
+    status, output = workflow.render_module("calc", model_client=client)
+    assert status == 1
+    assert "FAILED FR1" in output
+    assert "unit tests failed" in output.lower()
+
+
+@pytest.fixture
+def make_calc_project_factory(make_project):
+    def _factory():
+        return make_calc_project(make_project)
+
+    return _factory
