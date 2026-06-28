@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "featureId": "feat_library_c83dde8db7",
+  "title": "Python project mint-regenerative",
+  "summary": "Python project metadata in pyproject.toml.",
+  "kind": "library",
+  "source": "python-project",
+  "confidence": "medium",
+  "entrypoints": [
+    {
+      "path": "pyproject.toml",
+      "symbol": "mint-regenerative",
+      "route": null,
+      "command": null
+    }
+  ],
+  "ownedFiles": [
+    {
+      "path": "pyproject.toml",
+      "reason": "python project metadata"
+    }
+  ],
+  "contextFiles": [
+    {
+      "path": "README.md",
+      "reason": "python project context"
+    }
+  ],
+  "tests": [],
+  "tags": [
+    "python",
+    "package"
+  ],
+  "trustBoundaries": [],
+  "status": "fixed",
+  "lock": null,
+  "findingIds": [
+    "fnd_sig-feat-library-c83dde8db7-e064_4ae84e7436"
+  ],
+  "patchAttemptIds": [],
+  "analysisHistory": [
+    {
+      "runId": "20260628T165641-edcb72",
+      "kind": "review",
+      "summary": "1 finding(s); prompt=11376 bytes; approxTokens=2844; includedFiles=2; omittedFiles=0",
+      "provider": "codex",
+      "model": null,
+      "reasoningEffort": null,
+      "createdAt": "2026-06-28T16:57:02.862Z"
+    }
+  ],
+  "createdAt": "2026-06-28T16:56:33.610Z",
+  "updatedAt": "2026-06-28T17:53:32.640Z"
+}

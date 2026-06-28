@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-cli-command-b227ac0623-_07235a7950",
+  "featureId": "feat_cli-command_b227ac0623",
+  "title": "Console script entry point is not exercised by the CLI tests",
+  "category": "test-gap",
+  "severity": "low",
+  "confidence": "high",
+  "triage": "test-gap",
+  "evidence": [
+    {
+      "path": "tests/test_cli.py",
+      "startLine": 16,
+      "endLine": 27,
+      "symbol": "run_mint",
+      "quote": null
+    },
+    {
+      "path": "tests/test_cli.py",
+      "startLine": 202,
+      "endLine": 235,
+      "symbol": "test_cli_main_direct_smoke_covers_parser_handlers",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/cli.py",
+      "startLine": 263,
+      "endLine": 275,
+      "symbol": "main",
+      "quote": null
+    }
+  ],
+  "reasoning": "The semantic feature under review is the installed `mint` console command, but the integration helper always invokes the package with `python -m mint_cli`, and the direct smoke test calls `cli.main()` in-process. Those paths validate parser/handler behavior but would not catch packaging or entry-point drift where the published `mint` executable no longer resolves to `mint_cli.cli:main`.",
+  "reproduction": null,
+  "recommendation": "Add a packaging smoke test that invokes the installed `mint` command, at minimum for `--version` or `--help`, in the same environment used for release validation.",
+  "whyTestsDoNotAlreadyCoverThis": "The included tests exercise module execution and direct function calls, but no included test launches an executable named `mint`.",
+  "suggestedRegressionTest": "Install the project into an isolated environment or use the built wheel, then run `mint --version` and assert a zero exit code plus the expected version string.",
+  "minimumFixScope": "One CLI packaging smoke test that executes the console script rather than `python -m mint_cli`.",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original evidence still exists: tests/test_cli.py:16-34 and tests/e2e/test_cli_e2e.py:16-29 still use python -m mint_cli, tests/test_cli.py:219-251 still calls cli.main() directly, and src/mint_cli/cli.py:263-275 still defines main. The gap is now covered by tests/test_cli.py:149-162, which runs Path(sys.executable).parent / \"mint\" with --version and asserts the installed console-script output. pyproject.toml:21-22 still declares mint = \"mint_cli.cli:main\", and .github/workflows/offline-ci.yml:21-26 installs the package before running mint doctor and pytest. A local targeted pytest run failed only because this uninstalled Homebrew Python environment has no /opt/homebrew/opt/python@3.13/bin/mint, which confirms the test targets the real installed executable rather than python -m.",
+      "commands": [
+        "git status --short",
+        "rg -n \"def run_mint|test_cli_main_direct|def main|console_scripts|project\\.scripts|mint_cli\\.cli|python -m mint_cli|\\bmint --(version|help)\" tests/test_cli.py src/mint_cli/cli.py pyproject.toml setup.cfg setup.py",
+        "rg -n \"subprocess|python -m mint_cli|\\bmint --(version|help)|console_scripts|project\\.scripts|entry_points|mint_cli\\.cli|run_mint|test_.*cli|test_.*mint\" tests src pyproject.toml setup.cfg setup.py",
+        "nl -ba tests/test_cli.py",
+        "nl -ba tests/e2e/test_cli_e2e.py",
+        "nl -ba src/mint_cli/cli.py",
+        "nl -ba pyproject.toml",
+        "nl -ba .github/workflows/offline-ci.yml",
+        "/opt/homebrew/bin/python3.13 -m pytest tests/test_cli.py::test_installed_console_script_reports_version -q",
+        "PYTHONDONTWRITEBYTECODE=1 ./mint --version"
+      ],
+      "createdAt": "2026-06-28T17:47:42.167Z"
+    }
+  ],
+  "signature": "sig_feat-cli-command-b227ac0623_4640ec16de",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:57:51.940Z",
+  "updatedAt": "2026-06-28T17:47:42.167Z"
+}

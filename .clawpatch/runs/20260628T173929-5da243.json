@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "runId": "20260628T173929-5da243",
+  "command": "revalidate",
+  "args": [
+    "--root",
+    "/Users/ewi/repos/mint",
+    "--no-input",
+    "revalidate",
+    "--include-dirty",
+    "--since",
+    "HEAD",
+    "--plain"
+  ],
+  "rootPath": "/Users/ewi/repos/mint",
+  "headSha": "e281b54a29f7153708ac0f376b4b24a0b1a9e3c0",
+  "startedAt": "2026-06-28T17:39:29.851Z",
+  "finishedAt": "2026-06-28T17:57:31.324Z",
+  "status": "completed",
+  "claimedFeatureIds": [],
+  "findingIds": [
+    "fnd_sig-feat-cli-command-832a326ac4-_0813217f94",
+    "fnd_sig-feat-cli-command-832a326ac4-_d34bae2641",
+    "fnd_sig-feat-cli-command-b227ac0623-_07235a7950",
+    "fnd_sig-feat-cli-command-f51cbb7c31-_232f04adb4",
+    "fnd_sig-feat-cli-command-f51cbb7c31-_f2144a7d6b",
+    "fnd_sig-feat-library-c83dde8db7-e064_4ae84e7436",
+    "fnd_sig-feat-test-suite-a6226f638f-7_8c84e6068b",
+    "fnd_sig-feat-test-suite-b323288fb4-d_4de0532cc9"
+  ],
+  "patchAttemptIds": [],
+  "errors": []
+}

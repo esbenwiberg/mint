@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "featureId": "feat_cli-command_b227ac0623",
+  "title": "Python CLI command mint",
+  "summary": "Python console script 'mint' targets mint_cli.cli:main, source src/mint_cli/cli.py.",
+  "kind": "cli-command",
+  "source": "python-console-script",
+  "confidence": "high",
+  "entrypoints": [
+    {
+      "path": "src/mint_cli/cli.py",
+      "symbol": "main",
+      "route": null,
+      "command": "mint"
+    }
+  ],
+  "ownedFiles": [
+    {
+      "path": "src/mint_cli/cli.py",
+      "reason": "console script source"
+    }
+  ],
+  "contextFiles": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "reason": "associated test"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "reason": "associated test"
+    }
+  ],
+  "tests": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "command": "pytest"
+    }
+  ],
+  "tags": [
+    "python",
+    "cli"
+  ],
+  "trustBoundaries": [
+    "user-input",
+    "filesystem",
+    "process-exec"
+  ],
+  "status": "fixed",
+  "lock": null,
+  "findingIds": [
+    "fnd_sig-feat-cli-command-b227ac0623-_07235a7950"
+  ],
+  "patchAttemptIds": [],
+  "analysisHistory": [
+    {
+      "runId": "20260628T165641-edcb72",
+      "kind": "review",
+      "summary": "1 finding(s); prompt=46482 bytes; approxTokens=11621; includedFiles=3; omittedFiles=0",
+      "provider": "codex",
+      "model": null,
+      "reasoningEffort": null,
+      "createdAt": "2026-06-28T16:57:51.940Z"
+    }
+  ],
+  "createdAt": "2026-06-28T16:56:33.610Z",
+  "updatedAt": "2026-06-28T17:47:42.171Z"
+}

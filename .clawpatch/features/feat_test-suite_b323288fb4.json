@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "featureId": "feat_test-suite_b323288fb4",
+  "title": "Python test suite src/mint_cli",
+  "summary": "Python pytest files in src/mint_cli.",
+  "kind": "test-suite",
+  "source": "python-test-suite",
+  "confidence": "medium",
+  "entrypoints": [
+    {
+      "path": "src/mint_cli",
+      "symbol": "src/mint_cli",
+      "route": null,
+      "command": null
+    }
+  ],
+  "ownedFiles": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "reason": "pytest file"
+    }
+  ],
+  "contextFiles": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "reason": "nearby test"
+    }
+  ],
+  "tests": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "command": "pytest"
+    }
+  ],
+  "tags": [
+    "python",
+    "test"
+  ],
+  "trustBoundaries": [],
+  "status": "fixed",
+  "lock": null,
+  "findingIds": [
+    "fnd_sig-feat-test-suite-b323288fb4-d_4de0532cc9"
+  ],
+  "patchAttemptIds": [],
+  "analysisHistory": [
+    {
+      "runId": "20260628T165641-edcb72",
+      "kind": "review",
+      "summary": "1 finding(s); prompt=24020 bytes; approxTokens=6005; includedFiles=1; omittedFiles=0",
+      "provider": "codex",
+      "model": null,
+      "reasoningEffort": null,
+      "createdAt": "2026-06-28T16:57:23.590Z"
+    }
+  ],
+  "createdAt": "2026-06-28T16:56:33.610Z",
+  "updatedAt": "2026-06-28T17:57:31.323Z"
+}

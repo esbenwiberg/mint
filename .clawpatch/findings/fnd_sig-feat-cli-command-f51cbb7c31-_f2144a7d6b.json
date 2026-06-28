@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-cli-command-f51cbb7c31-_f2144a7d6b",
+  "featureId": "feat_cli-command_f51cbb7c31",
+  "title": "Cassette filenames collide across model names",
+  "category": "data-loss",
+  "severity": "medium",
+  "confidence": "high",
+  "triage": "confirmed-bug",
+  "evidence": [
+    {
+      "path": "src/mint_cli/renderer/cassettes.py",
+      "startLine": 22,
+      "endLine": 37,
+      "symbol": "cassette_id",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/renderer/cassettes.py",
+      "startLine": 40,
+      "endLine": 41,
+      "symbol": "cassette_path",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/renderer/cassettes.py",
+      "startLine": 67,
+      "endLine": 85,
+      "symbol": "RecordingClient.complete",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/renderer/cassettes.py",
+      "startLine": 201,
+      "endLine": 205,
+      "symbol": "ReplayClient._validate",
+      "quote": null
+    }
+  ],
+  "reasoning": "The cassette id includes prompt version, module, unit, phase, attempt, and prompt text, but not the configured model. Since the path is derived only from that id and RecordingClient writes the file unconditionally, recording the same request with a different model overwrites the previous cassette. Replay then validates the stored model and fails for the overwritten model, so one model's offline cassette corpus can silently destroy another's.",
+  "reproduction": "Record the same RenderRequest and prompt twice into the same cassette_dir with model='a' and model='b'. Both writes target the same v1/<hash>.json path, and replaying with model='a' after the second write raises the model mismatch error.",
+  "recommendation": "Include the model in the cassette key or namespace cassette paths by model, and add a migration/error path for old cassette ids if existing fixtures matter.",
+  "whyTestsDoNotAlreadyCoverThis": "No linked tests exercise recording the same request under two model names or assert that model-specific cassettes can coexist.",
+  "suggestedRegressionTest": "Create two RecordingClient instances with different model values and the same cassette_dir/request/prompt; assert they write distinct cassette paths or that both ReplayClient(model=...) instances can replay successfully after both recordings.",
+  "minimumFixScope": "Change cassette_id/cassette_path inputs to account for model identity, update callers, and add coexistence coverage.",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original path still exists, but the current code no longer matches the bug. src/mint_cli/renderer/cassettes.py:22-44 lets cassette_id include model in the hash payload, RecordingClient passes self._model at lines 69-75, and ReplayClient uses the model-scoped id at lines 112-118 with a legacy unscoped fallback at lines 120-127. Tests now cover the regression: tests/test_renderer.py:307-333 records the same request with claude-a and claude-b, asserts two cassette files, and replays both successfully; lines 336-373 cover legacy unscoped cassettes; lines 413-415 assert model changes the id. Targeted pytest passed under Python 3.13. The initial python/python3 attempts failed because python was missing and system python3 is 3.9, below the project requirement.",
+      "commands": [
+        "pwd",
+        "rg --files -g 'cassettes.py' -g '*cassette*' -g '*test*'",
+        "nl -ba src/mint_cli/renderer/cassettes.py",
+        "rg -n \"cassette_id|cassette_path|RecordingClient|ReplayClient|model\" src tests -g '*.py'",
+        "python -B -m pytest tests/test_renderer.py -k 'recording_clients_for_different_models_do_not_overwrite or replay_client_accepts_legacy_model_unscoped_cassette or cassette_id_includes_prompt_version_prompt_and_attempt' -p no:cacheprovider",
+        "python3 -B -m pytest tests/test_renderer.py -k 'recording_clients_for_different_models_do_not_overwrite or replay_client_accepts_legacy_model_unscoped_cassette or cassette_id_includes_prompt_version_prompt_and_attempt' -p no:cacheprovider",
+        "sed -n '1,220p' pyproject.toml",
+        "command -v python3.13",
+        "command -v uv",
+        "command -v pytest",
+        "/opt/homebrew/bin/python3.13 -B -m pytest tests/test_renderer.py -k 'recording_clients_for_different_models_do_not_overwrite or replay_client_accepts_legacy_model_unscoped_cassette or cassette_id_includes_prompt_version_prompt_and_attempt' -p no:cacheprovider",
+        "nl -ba tests/test_renderer.py | sed -n '252,420p'",
+        "nl -ba src/mint_cli/renderer/model.py | sed -n '54,90p'"
+      ],
+      "createdAt": "2026-06-28T17:50:27.518Z"
+    }
+  ],
+  "signature": "sig_feat-cli-command-f51cbb7c31_2a5d40bc0e",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:59:54.771Z",
+  "updatedAt": "2026-06-28T17:50:27.518Z"
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "projectId": "prj_https-github-com-esbenwiberg-min_19e748a385",
+  "name": "mint",
+  "rootPath": "/Users/ewi/repos/mint",
+  "git": {
+    "remoteUrl": "https://github.com/esbenwiberg/mint",
+    "defaultBranch": null,
+    "currentBranch": "main",
+    "headSha": "e281b54a29f7153708ac0f376b4b24a0b1a9e3c0"
+  },
+  "detected": {
+    "languages": [
+      "python"
+    ],
+    "frameworks": [
+      "pytest"
+    ],
+    "packageManagers": [
+      "python"
+    ],
+    "commands": {
+      "typecheck": null,
+      "lint": null,
+      "format": null,
+      "test": "pytest"
+    }
+  },
+  "createdAt": "2026-06-28T16:56:21.088Z",
+  "updatedAt": "2026-06-28T16:56:21.088Z"
+}

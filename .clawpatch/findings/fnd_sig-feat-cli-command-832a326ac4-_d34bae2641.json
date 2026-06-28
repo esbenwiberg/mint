@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-cli-command-832a326ac4-_d34bae2641",
+  "featureId": "feat_cli-command_832a326ac4",
+  "title": "Invalid config scalar values escape MintError handling",
+  "category": "bug",
+  "severity": "medium",
+  "confidence": "high",
+  "triage": "confirmed-bug",
+  "evidence": [
+    {
+      "path": "src/mint_cli/config.py",
+      "startLine": 76,
+      "endLine": 105,
+      "symbol": "load_config",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/config.py",
+      "startLine": 107,
+      "endLine": 108,
+      "symbol": "load_config",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/cli.py",
+      "startLine": 271,
+      "endLine": 275,
+      "symbol": "main",
+      "quote": null
+    }
+  ],
+  "reasoning": "load_config converts many user-controlled config values with int() and bool-like assumptions, but only catches KeyError. If mint.yaml contains an invalid scalar such as version: nope, maxFunctionalUnitsPerRender: many, or testQuality: false, load_config raises ValueError or AttributeError. cli.main only converts MintError into a user-facing error, so these bad config files produce an uncaught traceback instead of a clean FAIL/ERROR message.",
+  "reproduction": "In mint.yaml, set version: nope and run mint doctor. The int(raw['version']) conversion raises ValueError, which is not wrapped in MintError and is not caught by cli.main.",
+  "recommendation": "Validate config field types and ranges explicitly, catch ValueError/TypeError/AttributeError during config construction, and re-raise MintError with the field name and expected type.",
+  "whyTestsDoNotAlreadyCoverThis": "tests/test_config.py covers missing or unsafe output directories, but not malformed numeric/boolean config values or wrong-shaped sections.",
+  "suggestedRegressionTest": "Add tests for load_config with version: nope, limits.unitRetries: many, and testQuality: false, asserting MintError messages rather than raw Python exceptions.",
+  "minimumFixScope": "src/mint_cli/config.py load_config validation and error wrapping.",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original paths still exist, but the config evidence has moved/changed: src/mint_cli/config.py now builds config through _mapping, _int, and _bool helpers. _int rejects bools and wraps TypeError/ValueError as MintError; _mapping turns wrong-shaped sections such as testQuality: false into MintError. cli.py still catches MintError in main. tests/test_config.py now includes regression coverage for version: nope and testQuality: false, and python3 -m pytest -q tests/test_config.py passed (8 tests). Direct Python 3.12 checks also showed version: nope, limits.unitRetries: many, and testQuality: false all raise MintError, and a CLI doctor reproduction exits 1 with a clean FAIL doctor message rather than a traceback.",
+      "commands": [
+        "rg -n \"def load_config|MintError|int\\(|version|maxFunctionalUnitsPerRender|testQuality|unitRetries|except|def main\" src/mint_cli/config.py src/mint_cli/cli.py tests",
+        "nl -ba src/mint_cli/config.py",
+        "nl -ba src/mint_cli/cli.py",
+        "nl -ba tests/test_config.py",
+        "python3 -m pytest -q tests/test_config.py",
+        "/opt/homebrew/bin/python3.12 -c '<manual load_config check for version=nope, unitRetries=many, testQuality=false>'",
+        "/opt/homebrew/bin/python3.12 -c '<manual cli.main([\"doctor\"]) reproduction with version=nope>'"
+      ],
+      "createdAt": "2026-06-28T17:44:54.518Z"
+    }
+  ],
+  "signature": "sig_feat-cli-command-832a326ac4_9589b08161",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:59:09.470Z",
+  "updatedAt": "2026-06-28T17:44:54.518Z"
+}

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-cli-command-832a326ac4-_0813217f94",
+  "featureId": "feat_cli-command_832a326ac4",
+  "title": "Spec dependency names can escape project-scoped paths",
+  "category": "security",
+  "severity": "medium",
+  "confidence": "medium",
+  "triage": "risk",
+  "evidence": [
+    {
+      "path": "src/mint_cli/specs.py",
+      "startLine": 123,
+      "endLine": 124,
+      "symbol": "parse_spec_file",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/workflow.py",
+      "startLine": 204,
+      "endLine": 211,
+      "symbol": "ModuleContext",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/workflow.py",
+      "startLine": 289,
+      "endLine": 299,
+      "symbol": "_spec_loader/resolve_required_order",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/workflow.py",
+      "startLine": 307,
+      "endLine": 323,
+      "symbol": "compute_context_hashes",
+      "quote": null
+    }
+  ],
+  "reasoning": "imports and requires are accepted as arbitrary strings, then used directly to build spec paths and generated source paths. A spec can name a dependency such as '../external' or '../specs/taskstore', causing Mint to read a spec outside the intended specs/<module>.mint.md namespace and to compute or pass generated paths outside generated/<module>. Because required modules also feed render ordering and runtime paths, this breaks the project directory boundary and can lead to reads or later writes in unintended locations.",
+  "reproduction": "Create a spec whose frontmatter contains requires: [../external] with ../external.mint.md present, or requires: [../specs/taskstore] in a project that has specs/taskstore.mint.md. Healthcheck/render dependency resolution will accept the reference string and derive paths from it instead of rejecting it as an invalid module slug.",
+  "recommendation": "Validate every imports/requires item with the same module slug rules used by new_module, reject path separators, '.', and '..', and have _spec_loader verify that the parsed spec.module exactly equals the requested module name.",
+  "whyTestsDoNotAlreadyCoverThis": "The included specs tests cover self-require rejection and normal imports/requires parsing, but do not include invalid dependency names or traversal-like module references.",
+  "suggestedRegressionTest": "Add tests that parse or healthcheck specs with imports/requires values like '../base', 'base/child', '.', and '..', asserting MintError before any filesystem path is derived outside specs/.",
+  "minimumFixScope": "src/mint_cli/specs.py validation plus a defensive equality check in src/mint_cli/workflow.py _spec_loader.",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original evidence paths still exist, but the vulnerable behavior is now guarded. src/mint_cli/specs.py validates imports/requires through MODULE_REF_RE and validate_module_refs at lines 14 and 142-143/273-279, rejecting '../base', 'base/child', '.', and '..'. src/mint_cli/workflow.py still derives spec/generated paths at lines 207-211 and hashes required modules at lines 315-331, but _spec_loader now checks parsed spec.module equals the requested module at lines 292-299. Regression coverage exists in tests/test_specs.py:131-136 and the targeted pytest run passed (10 passed). I also reproduced the reported traversal shape in a temporary project: parse_spec_file rejected '../external', and _spec_loader rejected a direct '../external' load because the parsed module did not match the requested name.",
+      "commands": [
+        "pwd",
+        "rg -n \"def parse_spec_file|requires|imports|class ModuleContext|def compute_context_hashes|resolve_required_order|_spec_loader\" src/mint_cli/specs.py src/mint_cli/workflow.py tests",
+        "nl -ba src/mint_cli/specs.py",
+        "nl -ba src/mint_cli/workflow.py",
+        "nl -ba tests/test_specs.py",
+        "rg -n \"MODULE_REF_RE|validate_module_refs|Spec module .*requested|test_dependency_names_must_be_module_slugs|def _spec_loader|def spec_path|def generated_dir_for|def compute_context_hashes\" src/mint_cli/specs.py src/mint_cli/workflow.py tests/test_specs.py",
+        "/private/tmp/mint-py312-venv/bin/python -B -m pytest -q -p no:cacheprovider tests/test_specs.py::test_dependency_names_must_be_module_slugs tests/test_specs.py::test_imports_and_requires_parsed tests/test_workflow.py::test_healthcheck_flags_missing_required_spec",
+        "/private/tmp/mint-py312-venv/bin/python -B -c '<temporary traversal reproduction probe>'"
+      ],
+      "createdAt": "2026-06-28T17:41:51.967Z"
+    }
+  ],
+  "signature": "sig_feat-cli-command-832a326ac4_2c3916af06",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:59:09.470Z",
+  "updatedAt": "2026-06-28T17:41:51.967Z"
+}

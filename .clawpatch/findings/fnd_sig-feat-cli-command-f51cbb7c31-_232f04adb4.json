@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-cli-command-f51cbb7c31-_232f04adb4",
+  "featureId": "feat_cli-command_f51cbb7c31",
+  "title": "Model renderer can return non-patch JSON as rendered output",
+  "category": "api-contract",
+  "severity": "medium",
+  "confidence": "medium",
+  "triage": "contract-mismatch",
+  "evidence": [
+    {
+      "path": "src/mint_cli/renderer/model.py",
+      "startLine": 19,
+      "endLine": 24,
+      "symbol": "SYSTEM_PROMPT",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/renderer/model.py",
+      "startLine": 66,
+      "endLine": 106,
+      "symbol": "ModelRenderer.render",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/renderer/model.py",
+      "startLine": 171,
+      "endLine": 177,
+      "symbol": "extract_json",
+      "quote": null
+    },
+    {
+      "path": "src/mint_cli/renderer/patch.py",
+      "startLine": 14,
+      "endLine": 33,
+      "symbol": "validate_patch",
+      "quote": null
+    }
+  ],
+  "reasoning": "The renderer prompt requires a JSON object with a non-empty files list, and validate_patch implements that contract, but ModelRenderer only parses JSON and returns it as a rendered RenderOutcome. json.loads can return a list, string, or object missing files, so malformed model output can be classified as rendered and escape the ModelOutputError path with prompt/response/cassette context.",
+  "reproduction": "Use ScriptedModelClient({'default': '[]'}) with ModelRenderer.render(...). extract_json returns a list, and render returns RenderOutcome(patch=[], classification='rendered') instead of raising ModelOutputError.",
+  "recommendation": "Validate the parsed object inside ModelRenderer.render before constructing RenderOutcome, and wrap validate_patch failures in ModelOutputError so callers get the same audit context as parse failures.",
+  "whyTestsDoNotAlreadyCoverThis": "No linked tests cover model responses that are valid JSON but violate the patch schema.",
+  "suggestedRegressionTest": "Add a ModelRenderer test where the scripted response is '[]' or {'summary':'x','files':[]} and assert ModelOutputError includes the prompt, response, and cassette_id.",
+  "minimumFixScope": "Call validate_patch after extract_json in ModelRenderer.render, or make extract_json enforce object type and separately validate the patch schema before returning.",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original evidence paths still exist, with code moved slightly: src/mint_cli/renderer/model.py now has SYSTEM_PROMPT at lines 20-26, ModelRenderer.render at lines 69-122, extract_json at lines 187-216, and src/mint_cli/renderer/patch.py validate_patch at lines 14-33. The current ModelRenderer.render parses the response, then calls validate_patch(raw) before constructing RenderOutcome, and wraps MintError from validation in ModelOutputError with prompt, response, cassette_id, and renderer context. validate_patch rejects non-dict JSON and empty/missing files. The exact suggested regression exists at tests/test_renderer.py:193 and passes for ScriptedModelClient({\"default\":\"[]\"}), asserting ModelOutputError plus audit context.",
+      "commands": [
+        "pwd",
+        "rg -n \"SYSTEM_PROMPT|class ModelRenderer|def render|def extract_json|def validate_patch|ModelOutputError|ScriptedModelClient|files\" src tests",
+        "nl -ba src/mint_cli/renderer/model.py",
+        "nl -ba src/mint_cli/renderer/patch.py",
+        "nl -ba tests/test_renderer.py",
+        "PYTHONDONTWRITEBYTECODE=1 /opt/homebrew/bin/pytest tests/test_renderer.py::test_model_renderer_bubbles_patch_schema_error_with_audit_context -q -p no:cacheprovider"
+      ],
+      "createdAt": "2026-06-28T17:49:05.578Z"
+    }
+  ],
+  "signature": "sig_feat-cli-command-f51cbb7c31_00232334a6",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:59:54.771Z",
+  "updatedAt": "2026-06-28T17:49:05.578Z"
+}

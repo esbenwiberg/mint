@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-library-c83dde8db7-e064_4ae84e7436",
+  "featureId": "feat_library_c83dde8db7",
+  "title": "Build backend floor is too low for SPDX-style license metadata",
+  "category": "build-release",
+  "severity": "medium",
+  "confidence": "medium",
+  "triage": "risk",
+  "evidence": [
+    {
+      "path": "pyproject.toml",
+      "startLine": 2,
+      "endLine": 3,
+      "symbol": null,
+      "quote": null
+    },
+    {
+      "path": "pyproject.toml",
+      "startLine": 11,
+      "endLine": 11,
+      "symbol": null,
+      "quote": null
+    }
+  ],
+  "reasoning": "The project declares only setuptools>=68 as its build backend, but uses the string form of project.license. That form relies on newer SPDX-style project metadata support; older setuptools releases allowed by the declared floor may reject or mishandle it during isolated builds, making source/wheel builds depend on whatever backend version pip happens to resolve.",
+  "reproduction": null,
+  "recommendation": "Either raise the build-system setuptools minimum to a version that supports string license expressions, or use the legacy PEP 621 table form compatible with the declared backend floor.",
+  "whyTestsDoNotAlreadyCoverThis": "No packaging/build test is listed for this feature, and the README test command only runs pytest after an editable install rather than exercising isolated sdist/wheel metadata generation.",
+  "suggestedRegressionTest": "Add a packaging smoke test in CI that runs `python -m build` or equivalent isolated wheel/sdist build from a clean environment.",
+  "minimumFixScope": "pyproject.toml build-system/license metadata",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original evidence path still exists. In the current working tree, pyproject.toml lines 1-3 set the build backend requirement to setuptools>=77.0.3, while line 11 still uses license = MIT. git diff confirms the previous setuptools>=68 floor has been raised. A packaging smoke test in a temp Python 3.12 venv pinned to setuptools==77.0.3 built both sdist and wheel successfully, and the generated wheel metadata contains Metadata-Version 2.4 and License-Expression: MIT. This directly addresses the reported minimum-backend risk.",
+      "commands": [
+        "sed -n '1,120p' pyproject.toml",
+        "rg -n \"setuptools|license|build-system|license-files|License|python -m build|build\" pyproject.toml README* .github -S",
+        "git -C /Users/ewi/repos/mint diff -- pyproject.toml",
+        "tmpdir=\"$(mktemp -d)\"; /opt/homebrew/bin/python3.12 -m venv \"$tmpdir/venv\"; \"$tmpdir/venv/bin/python\" -m pip install -q \"setuptools==77.0.3\" \"build\" \"wheel\"; \"$tmpdir/venv/bin/python\" -m build --no-isolation --sdist --wheel --outdir \"$tmpdir/dist\" /Users/ewi/repos/mint; ls -la \"$tmpdir/dist\"",
+        "unzip -p /private/var/folders/k6/nj5ps5vj2078xw4xv9_1k_3m0000gn/T/tmp.debbUrcxqI/dist/mint_regenerative-1.0.0-py3-none-any.whl mint_regenerative-1.0.0.dist-info/METADATA | rg -n \"License|Metadata-Version\"",
+        "rm -rf /Users/ewi/repos/mint/build /Users/ewi/repos/mint/src/mint_regenerative.egg-info",
+        "rm -rf /private/var/folders/k6/nj5ps5vj2078xw4xv9_1k_3m0000gn/T/tmp.debbUrcxqI"
+      ],
+      "createdAt": "2026-06-28T17:53:32.636Z"
+    }
+  ],
+  "signature": "sig_feat-library-c83dde8db7_e06445895b",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:57:02.862Z",
+  "updatedAt": "2026-06-28T17:53:32.636Z"
+}

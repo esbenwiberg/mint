@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "runId": "20260628T165641-edcb72",
+  "command": "review",
+  "args": [
+    "--root",
+    "/Users/ewi/repos/mint",
+    "--no-input",
+    "review",
+    "--include-dirty",
+    "--since",
+    "HEAD",
+    "--plain"
+  ],
+  "rootPath": "/Users/ewi/repos/mint",
+  "headSha": "e281b54a29f7153708ac0f376b4b24a0b1a9e3c0",
+  "startedAt": "2026-06-28T16:56:41.794Z",
+  "finishedAt": "2026-06-28T16:59:54.773Z",
+  "status": "completed",
+  "claimedFeatureIds": [
+    "feat_cli-command_832a326ac4",
+    "feat_cli-command_b227ac0623",
+    "feat_cli-command_f51cbb7c31",
+    "feat_library_c83dde8db7",
+    "feat_test-suite_a6226f638f",
+    "feat_test-suite_b323288fb4"
+  ],
+  "findingIds": [
+    "fnd_sig-feat-library-c83dde8db7-e064_4ae84e7436",
+    "fnd_sig-feat-test-suite-a6226f638f-7_8c84e6068b",
+    "fnd_sig-feat-test-suite-b323288fb4-d_4de0532cc9",
+    "fnd_sig-feat-cli-command-b227ac0623-_07235a7950",
+    "fnd_sig-feat-cli-command-832a326ac4-_0813217f94",
+    "fnd_sig-feat-cli-command-832a326ac4-_d34bae2641",
+    "fnd_sig-feat-cli-command-f51cbb7c31-_f2144a7d6b",
+    "fnd_sig-feat-cli-command-f51cbb7c31-_232f04adb4"
+  ],
+  "patchAttemptIds": [],
+  "errors": []
+}

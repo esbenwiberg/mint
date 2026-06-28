@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "featureId": "feat_cli-command_832a326ac4",
+  "title": "Python source src/mint_cli",
+  "summary": "Python source group src/mint_cli with 12 files.",
+  "kind": "cli-command",
+  "source": "python-source-group",
+  "confidence": "medium",
+  "entrypoints": [
+    {
+      "path": "src/mint_cli",
+      "symbol": "src/mint_cli",
+      "route": null,
+      "command": null
+    }
+  ],
+  "ownedFiles": [
+    {
+      "path": "src/mint_cli/__init__.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/__main__.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/cli.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/config.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/errors.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/gitutil.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/hashing.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/modgraph.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/specs.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/stacks.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/state.py",
+      "reason": "source group src/mint_cli"
+    },
+    {
+      "path": "src/mint_cli/workflow.py",
+      "reason": "source group src/mint_cli"
+    }
+  ],
+  "contextFiles": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "reason": "associated test"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "reason": "associated test"
+    },
+    {
+      "path": "tests/test_config.py",
+      "reason": "associated test"
+    },
+    {
+      "path": "tests/test_modgraph.py",
+      "reason": "associated test"
+    },
+    {
+      "path": "tests/test_specs.py",
+      "reason": "associated test"
+    },
+    {
+      "path": "tests/test_workflow.py",
+      "reason": "associated test"
+    }
+  ],
+  "tests": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_config.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_modgraph.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_specs.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_workflow.py",
+      "command": "pytest"
+    }
+  ],
+  "tags": [
+    "python",
+    "source-group"
+  ],
+  "trustBoundaries": [
+    "user-input",
+    "process-exec"
+  ],
+  "status": "fixed",
+  "lock": null,
+  "findingIds": [
+    "fnd_sig-feat-cli-command-832a326ac4-_0813217f94",
+    "fnd_sig-feat-cli-command-832a326ac4-_d34bae2641"
+  ],
+  "patchAttemptIds": [],
+  "analysisHistory": [
+    {
+      "runId": "20260628T165641-edcb72",
+      "kind": "review",
+      "summary": "2 finding(s); prompt=175146 bytes; approxTokens=43787; includedFiles=18; omittedFiles=0",
+      "provider": "codex",
+      "model": null,
+      "reasoningEffort": null,
+      "createdAt": "2026-06-28T16:59:09.471Z"
+    }
+  ],
+  "createdAt": "2026-06-28T16:56:33.610Z",
+  "updatedAt": "2026-06-28T17:44:54.524Z"
+}

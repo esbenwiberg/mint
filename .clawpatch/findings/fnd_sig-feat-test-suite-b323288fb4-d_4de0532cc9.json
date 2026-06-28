@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-test-suite-b323288fb4-d_4de0532cc9",
+  "featureId": "feat_test-suite_b323288fb4",
+  "title": "Mutation probe treats a crashing conformance script as a killed mutant",
+  "category": "bug",
+  "severity": "medium",
+  "confidence": "high",
+  "triage": "confirmed-bug",
+  "evidence": [
+    {
+      "path": "src/mint_cli/test_quality.py",
+      "startLine": 477,
+      "endLine": 479,
+      "symbol": "_mutate_and_test",
+      "quote": null
+    }
+  ],
+  "reasoning": "A mutant is considered killed when either the unit script or conformance script exits non-zero. Because the conformance script is always executed and any non-zero exit counts as success for the probe, an unrelated broken or missing conformance runner can make every mutant look killed even when the unit tests still pass. That lets weak generated tests pass the mutation gate for the wrong reason.",
+  "reproduction": null,
+  "recommendation": "Only count a mutant as killed by scripts that are configured and known to pass on the unmutated project, or run a baseline before mutation and treat baseline script failures as test-quality infrastructure failures rather than killed mutants.",
+  "whyTestsDoNotAlreadyCoverThis": "This file contains the implementation but no included tests exercising mutation behavior when one project script fails independently of the mutation.",
+  "suggestedRegressionTest": "Add a test where the unit script returns 0, the conformance script returns non-zero before and after mutation, and assert the mutation probe reports an infrastructure failure instead of passed/killed.",
+  "minimumFixScope": "Update _mutate_and_test/_run_mutation_probe to distinguish baseline script failures from mutation-induced failures.",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original evidence path still exists, but the cited lines 477-479 now belong to mutation candidate collection, not the kill decision. The current mutation flow first runs _run_mutation_baseline in src/mint_cli/test_quality.py:386-388, and _run_mutation_baseline fails the probe if either unit or conformance exits non-zero before mutation at src/mint_cli/test_quality.py:424-452. _mutate_and_test still treats unit or conformance non-zero as a killed mutant at lines 501-514, but it is only reached after the baseline passes, so an already-broken conformance script no longer makes mutants look killed. The regression test tests/test_workflow.py::test_mutation_probe_fails_when_baseline_conformance_script_fails covers the reported scenario and passes under Python 3.12.",
+      "commands": [
+        "rg -n \"def _mutate_and_test|_mutate_and_test|_run_mutation_probe|conformance\" src/mint_cli/test_quality.py tests -S",
+        "git -C /Users/ewi/repos/mint status --short",
+        "rg --files",
+        "nl -ba src/mint_cli/test_quality.py | sed -n '360,540p'",
+        "nl -ba tests/test_workflow.py | sed -n '720,790p'",
+        "rg -n \"baseline|mutation|infrastructure|Mutation\" src/mint_cli/test_quality.py tests/test_workflow.py -S",
+        "python -m pytest tests/test_workflow.py::test_mutation_probe_fails_when_baseline_conformance_script_fails -q",
+        "python3 -m pytest tests/test_workflow.py::test_mutation_probe_fails_when_baseline_conformance_script_fails -q",
+        "sed -n '1,220p' pyproject.toml",
+        "which python3",
+        "which uv",
+        "ls -la",
+        "ls -1 /opt/homebrew/bin/python*",
+        "ls -1 /usr/local/bin/python*",
+        "ls -1 .venv/bin/python*",
+        "/opt/homebrew/bin/python3.12 -m pytest tests/test_workflow.py::test_mutation_probe_fails_when_baseline_conformance_script_fails -q",
+        "find . -maxdepth 3 -type f -path '*/bin/pytest' -o -path '*/bin/python'",
+        "ls -1 .venv/bin",
+        "ls -1 /private/tmp | rg 'venv|mint|pytest'",
+        "ls -1 /private/tmp/mint-py312-venv/bin",
+        "/private/tmp/mint-py312-venv/bin/python --version",
+        "/private/tmp/mint-py312-venv/bin/python -m pytest --version",
+        "/private/tmp/mint-py312-venv/bin/python -m pytest tests/test_workflow.py::test_mutation_probe_fails_when_baseline_conformance_script_fails -q"
+      ],
+      "createdAt": "2026-06-28T17:57:31.319Z"
+    }
+  ],
+  "signature": "sig_feat-test-suite-b323288fb4_d87f0d616c",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:57:23.589Z",
+  "updatedAt": "2026-06-28T17:57:31.319Z"
+}

@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "findingId": "fnd_sig-feat-test-suite-a6226f638f-7_8c84e6068b",
+  "featureId": "feat_test-suite_a6226f638f",
+  "title": "CLI subprocess test helper can hang the suite indefinitely",
+  "category": "build-release",
+  "severity": "medium",
+  "confidence": "high",
+  "triage": "risk",
+  "evidence": [
+    {
+      "path": "tests/test_cli.py",
+      "startLine": 16,
+      "endLine": 33,
+      "symbol": "run_mint",
+      "quote": null
+    },
+    {
+      "path": "tests/e2e/test_cli_e2e.py",
+      "startLine": 16,
+      "endLine": 29,
+      "symbol": "run_mint",
+      "quote": null
+    }
+  ],
+  "reasoning": "The main CLI test helper wraps subprocess.run without any timeout, so any regression that blocks in the CLI will block pytest/CI until the outer job times out. The e2e helper for the same CLI command path already uses timeout=180, which shows the intended behavior is to bound subprocess-driven tests.",
+  "reproduction": null,
+  "recommendation": "Add a reasonable timeout to tests/test_cli.py::run_mint, matching or intentionally differing from the e2e helper, and include stdout/stderr in timeout failure diagnostics if needed.",
+  "whyTestsDoNotAlreadyCoverThis": "The tests exercise many CLI commands through this helper, but none assert that the helper bounds execution time or fails fast for a hung child process.",
+  "suggestedRegressionTest": "Add a small helper-level test that monkeypatches subprocess.run or invokes a controlled long-running command path and asserts run_mint passes a timeout argument.",
+  "minimumFixScope": "Update tests/test_cli.py::run_mint to pass timeout=... to subprocess.run.",
+  "status": "fixed",
+  "history": [
+    {
+      "runId": "20260628T173929-5da243",
+      "kind": "revalidate",
+      "status": "fixed",
+      "note": null,
+      "reasoning": "The original evidence paths still exist. In current tests/test_cli.py, run_mint at lines 16-33 now passes timeout=180 to subprocess.run, matching tests/e2e/test_cli_e2e.py::run_mint. A targeted CLI test using that helper passes, so the specific unbounded subprocess-helper issue is no longer present.",
+      "commands": [
+        "rg -n \"def run_mint|subprocess\\\\.run|timeout\" tests/test_cli.py tests/e2e/test_cli_e2e.py",
+        "sed -n '1,45p' tests/test_cli.py",
+        "sed -n '1,40p' tests/e2e/test_cli_e2e.py",
+        "PYTHONDONTWRITEBYTECODE=1 /opt/homebrew/bin/python3.13 -m pytest -q tests/test_cli.py::test_cli_next_without_module_guides_project -p no:cacheprovider"
+      ],
+      "createdAt": "2026-06-28T17:55:22.172Z"
+    }
+  ],
+  "signature": "sig_feat-test-suite-a6226f638f_74fd341e28",
+  "linkedPatchAttemptIds": [],
+  "createdByRunId": "20260628T165641-edcb72",
+  "createdAt": "2026-06-28T16:57:06.938Z",
+  "updatedAt": "2026-06-28T17:55:22.172Z"
+}

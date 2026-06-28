@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "featureId": "feat_test-suite_a6226f638f",
+  "title": "Python test suite tests",
+  "summary": "Python pytest files in tests.",
+  "kind": "test-suite",
+  "source": "python-test-suite",
+  "confidence": "medium",
+  "entrypoints": [
+    {
+      "path": "tests",
+      "symbol": "tests",
+      "route": null,
+      "command": null
+    }
+  ],
+  "ownedFiles": [
+    {
+      "path": "tests/e2e/test_cli_e2e.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_calc_graph.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_config.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_modgraph.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_renderer.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_self_hosting.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_specs.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_typescript_stack.py",
+      "reason": "pytest file"
+    },
+    {
+      "path": "tests/test_workflow.py",
+      "reason": "pytest file"
+    }
+  ],
+  "contextFiles": [
+    {
+      "path": "tests/e2e/test_cli_e2e.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_calc_graph.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_config.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_modgraph.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_renderer.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_self_hosting.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_specs.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_typescript_stack.py",
+      "reason": "nearby test"
+    },
+    {
+      "path": "tests/test_workflow.py",
+      "reason": "nearby test"
+    }
+  ],
+  "tests": [
+    {
+      "path": "tests/e2e/test_cli_e2e.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_calc_graph.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_config.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_modgraph.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_renderer.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_self_hosting.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_specs.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_typescript_stack.py",
+      "command": "pytest"
+    },
+    {
+      "path": "tests/test_workflow.py",
+      "command": "pytest"
+    }
+  ],
+  "tags": [
+    "python",
+    "test"
+  ],
+  "trustBoundaries": [],
+  "status": "fixed",
+  "lock": null,
+  "findingIds": [
+    "fnd_sig-feat-test-suite-a6226f638f-7_8c84e6068b"
+  ],
+  "patchAttemptIds": [],
+  "analysisHistory": [
+    {
+      "runId": "20260628T165641-edcb72",
+      "kind": "review",
+      "summary": "1 finding(s); prompt=99409 bytes; approxTokens=24852; includedFiles=10; omittedFiles=0",
+      "provider": "codex",
+      "model": null,
+      "reasoningEffort": null,
+      "createdAt": "2026-06-28T16:57:06.938Z"
+    }
+  ],
+  "createdAt": "2026-06-28T16:56:33.610Z",
+  "updatedAt": "2026-06-28T17:55:22.176Z"
+}
