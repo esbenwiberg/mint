@@ -1,11 +1,11 @@
 # Mint
 
-Mint is a local, Codeplain-inspired regenerative coding experiment. You write
-plain `*.mint.md` specs, and `mint` renders working generated modules one
-functional unit at a time, runs generated unit and conformance tests, records
-checkpoints, and re-renders only the affected slice when a spec or dependency
-changes. Python is the default stack; TypeScript libraries are supported through
-the model/replay path with Node, `tsc --noEmit`, and Vitest.
+Mint is a local regenerative coding experiment. You write plain `*.mint.md`
+specs, and `mint` renders working generated modules one functional unit at a
+time, runs generated unit and conformance tests, records checkpoints, and
+re-renders only the affected slice when a spec or dependency changes. Python is
+the default stack; TypeScript libraries are supported through the model/replay
+path with Node, `tsc --noEmit`, and Vitest.
 
 The current v1 system is built around offline, reproducible runs:
 
@@ -32,9 +32,6 @@ For live Anthropic API recording, install the optional `live` extra:
 ```bash
 python3.12 -m pip install "mint-regenerative[live] @ git+https://github.com/esbenwiberg/mint.git"
 ```
-
-Mint itself is not a Bun/npm package. Bun or npm may be used by generated
-TypeScript modules, but the Mint orchestrator is the Python `mint` CLI.
 
 ## Use Mint In A Repo
 
@@ -176,7 +173,7 @@ conformance/                  Ignored generated conformance tests
 - `mint report <module>` prints the latest run report.
 - `mint clean <module> --yes` removes generated output for a module.
 
-See [commands.md](docs/regenerative-system/commands.md) for the full command guide.
+See `docs/regenerative-system/commands.md` for the full command guide.
 
 ## Testing And CI
 
@@ -188,13 +185,13 @@ Python generated-code scripts run pytest through `PYTHON_BIN`; the workflow defa
 that to the interpreter running `mint` so generated unit, conformance, and
 test-quality checks stay on the same runtime unless explicitly overridden.
 TypeScript generated modules run npm-compatible package scripts for `tsc --noEmit`
-and Vitest. See [typescript.md](docs/regenerative-system/typescript.md) for the
-package contract and current TS limits.
+and Vitest. See `docs/regenerative-system/typescript.md` for the package contract
+and current TS limits.
 
 ## Documentation
 
-Start with [docs/regenerative-system/README.md](docs/regenerative-system/README.md).
-That directory documents the system as built:
+Start with `docs/regenerative-system/README.md`. That directory documents the
+system as built:
 
 - architecture and render loop
 - spec format
@@ -206,5 +203,4 @@ That directory documents the system as built:
 - test-quality gates
 - known limits and next risks
 
-Historical planning notes live under `docs/regenerative-mvp/`, and Codeplain
-research notes live under `docs/codeplain-research/`.
+Historical planning notes live under `docs/regenerative-mvp/`.
