@@ -19,6 +19,7 @@ if str(SRC) not in sys.path:
 
 DEFAULT_CONFIG = """version: 1
 defaultStack: python-cli
+specsDir: .mint/specs
 generatedDir: generated
 conformanceDir: conformance
 scripts:
@@ -49,13 +50,13 @@ class Project:
         self.root = root
 
     def write_spec(self, module: str, text: str) -> Path:
-        path = self.root / "specs" / f"{module}.mint.md"
+        path = self.spec_path(module)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return path
 
     def spec_path(self, module: str) -> Path:
-        return self.root / "specs" / f"{module}.mint.md"
+        return self.root / ".mint" / "specs" / f"{module}.mint.md"
 
     def metadata(self, module: str) -> dict:
         import json
@@ -77,7 +78,7 @@ def make_project(tmp_path: Path):
         shutil.copytree(REPO_ROOT / "test_scripts", scripts_dst)
         for script in scripts_dst.glob("*.sh"):
             script.chmod(0o755)
-        (root / "specs").mkdir()
+        (root / ".mint" / "specs").mkdir(parents=True)
         return Project(root)
 
     return _make
@@ -87,6 +88,6 @@ def make_project(tmp_path: Path):
 def demo_project(make_project):
     """A project with the two committed demo specs (taskstore + tasklist)."""
     project = make_project()
-    shutil.copy(REPO_ROOT / "specs" / "taskstore.mint.md", project.spec_path("taskstore"))
-    shutil.copy(REPO_ROOT / "specs" / "tasklist.mint.md", project.spec_path("tasklist"))
+    shutil.copy(REPO_ROOT / ".mint" / "specs" / "taskstore.mint.md", project.spec_path("taskstore"))
+    shutil.copy(REPO_ROOT / ".mint" / "specs" / "tasklist.mint.md", project.spec_path("tasklist"))
     return project

@@ -98,13 +98,29 @@ def test_apply_patch_blocks_symlink_escape(tmp_path):
     # A path that resolves outside the root must be refused even after resolve().
     module = tmp_path / "m"
     module.mkdir()
-    outside = tmp_path / "outside.py"
-    patch = {"files": [{"path": "link.py", "action": "write", "contents": "x", "root": "module"}]}
-    validated = validate_patch(patch)
-    # Normal case stays inside; sanity check the guard does not false-positive.
-    apply_patch(validated, module, tmp_path / "c")
-    assert (module / "link.py").exists()
-    assert not outside.exists()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (module / "link").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:  # pragma: no cover - platform/filesystem specific
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    patch = validate_patch(
+        {
+            "files": [
+                {
+                    "path": "link/evil.py",
+                    "action": "write",
+                    "contents": "x",
+                    "root": "module",
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(MintError, match="escapes module dir"):
+        apply_patch(patch, module, tmp_path / "c")
+    assert not (outside / "evil.py").exists()
 
 
 # ---- deterministic renderer ----
@@ -172,6 +188,16 @@ def test_model_renderer_bubbles_parse_error():
     client = ScriptedModelClient({"default": "not json"})
     with pytest.raises(MintError, match="unparseable"):
         ModelRenderer(client, "v1").render(make_request())
+
+
+def test_model_renderer_bubbles_patch_schema_error_with_audit_context():
+    client = ScriptedModelClient({"default": "[]"})
+    with pytest.raises(ModelOutputError, match="invalid patch") as exc:
+        ModelRenderer(client, "v1").render(make_request())
+
+    assert exc.value.prompt
+    assert exc.value.response == "[]"
+    assert exc.value.cassette_id
 
 
 def test_model_renderer_caps_response_size():
@@ -242,7 +268,12 @@ def test_recording_client_writes_versioned_cassette(tmp_path):
     actual = client.complete(system="system text", prompt="prompt text", request=request)
 
     assert actual == response
-    key = cassette_id(prompt_version="pv1", request=request, prompt="prompt text")
+    key = cassette_id(
+        prompt_version="pv1",
+        request=request,
+        prompt="prompt text",
+        model="claude-test",
+    )
     path = tmp_path / "v1" / f"{key}.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["cassetteVersion"] == 1
@@ -271,6 +302,75 @@ def test_replay_client_serves_recorded_response(tmp_path):
     replay = ReplayClient(cassette_dir=tmp_path, model="claude-test", prompt_version="pv1")
 
     assert replay.complete(system="system text", prompt="prompt text", request=request) == response
+
+
+def test_recording_clients_for_different_models_do_not_overwrite(tmp_path):
+    request = make_request()
+    response = json.dumps(
+        {"summary": "ok", "files": [{"path": "a.py", "action": "write", "contents": "x"}]}
+    )
+
+    RecordingClient(
+        ScriptedModelClient({"default": response}),
+        cassette_dir=tmp_path,
+        model="claude-a",
+        prompt_version="pv1",
+    ).complete(system="system text", prompt="prompt text", request=request)
+    RecordingClient(
+        ScriptedModelClient({"default": response}),
+        cassette_dir=tmp_path,
+        model="claude-b",
+        prompt_version="pv1",
+    ).complete(system="system text", prompt="prompt text", request=request)
+
+    cassettes = sorted((tmp_path / "v1").glob("*.json"))
+    assert len(cassettes) == 2
+    assert ReplayClient(
+        cassette_dir=tmp_path, model="claude-a", prompt_version="pv1"
+    ).complete(system="system text", prompt="prompt text", request=request) == response
+    assert ReplayClient(
+        cassette_dir=tmp_path, model="claude-b", prompt_version="pv1"
+    ).complete(system="system text", prompt="prompt text", request=request) == response
+
+
+def test_replay_client_accepts_legacy_model_unscoped_cassette(tmp_path):
+    request = make_request()
+    response = json.dumps(
+        {"summary": "ok", "files": [{"path": "a.py", "action": "write", "contents": "x"}]}
+    )
+    key = cassette_id(prompt_version="pv1", request=request, prompt="prompt text")
+    path = tmp_path / "v1" / f"{key}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "cassetteVersion": 1,
+                "id": key,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "model": "claude-test",
+                "promptVersion": "pv1",
+                "request": {
+                    "module": "taskstore",
+                    "unit": "FR1",
+                    "phase": "unit",
+                    "attempt": 1,
+                    "promptHash": "86f704a3919a173d7a7020a33a62e7aa2614effb8612f2d4aad41812fae61472",
+                },
+                "system": "system text",
+                "prompt": "prompt text",
+                "response": response,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        ReplayClient(cassette_dir=tmp_path, model="claude-test", prompt_version="pv1").complete(
+            system="system text", prompt="prompt text", request=request
+        )
+        == response
+    )
 
 
 def test_replay_client_fails_loudly_when_prompt_changes(tmp_path):
@@ -310,6 +410,9 @@ def test_cassette_id_includes_prompt_version_prompt_and_attempt():
     assert cassette_id(prompt_version="pv2", request=request, prompt="prompt text") != base
     assert cassette_id(prompt_version="pv1", request=request, prompt="changed prompt") != base
     assert cassette_id(prompt_version="pv1", request=make_request(attempt=2), prompt="prompt text") != base
+    assert cassette_id(
+        prompt_version="pv1", request=request, prompt="prompt text", model="claude-new"
+    ) != base
 
 
 def test_model_provider_defaults_to_replay_not_live(tmp_path):

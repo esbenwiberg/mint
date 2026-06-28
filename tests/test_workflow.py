@@ -1,17 +1,79 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
-from mint_cli import workflow
+from mint_cli import test_quality, workflow
 from mint_cli.renderer import ScriptedModelClient
 
 
 # --------------------------------------------------------------------------- #
 # deterministic, multi-module lifecycle
 # --------------------------------------------------------------------------- #
+
+
+def test_init_project_prints_skeleton_without_writing(tmp_path):
+    status, output = workflow.init_project(root=tmp_path)
+
+    assert status == 0
+    assert "mint Phase 0 skeleton" in output
+    assert "mint init --write" in output
+    assert not (tmp_path / "mint.yaml").exists()
+    assert not (tmp_path / "test_scripts").exists()
+
+
+def test_init_project_write_scaffolds_project(tmp_path):
+    status, output = workflow.init_project(write=True, root=tmp_path)
+
+    assert status == 0, output
+    assert "INIT mint project" in output
+    assert "First smoke test: mint render example" in output
+    assert "New module: choose a module slug and model id" in output
+    for rel in [".mint/specs", "resources", "generated", "conformance", "test_scripts"]:
+        assert (tmp_path / rel).is_dir()
+    for rel in ["resources/.gitkeep", "generated/.gitkeep", "conformance/.gitkeep"]:
+        assert (tmp_path / rel).is_file()
+    assert (tmp_path / ".mint" / "specs" / "example.mint.md").is_file()
+    config = workflow.load_config(tmp_path / "mint.yaml")
+    assert config.default_stack == "python-cli"
+    assert config.specs_dir == ".mint/specs"
+    assert config.renderer.provider == "local"
+    for rel in [
+        "test_scripts/prepare_environment.sh",
+        "test_scripts/run_unit_tests.sh",
+        "test_scripts/run_conformance_tests.sh",
+    ]:
+        script = tmp_path / rel
+        assert script.is_file()
+        assert os.access(script, os.X_OK)
+    doctor_status, doctor_output = workflow.doctor_project(root=tmp_path)
+    assert doctor_status == 0, doctor_output
+    health_status, health_output = workflow.healthcheck_module("example", root=tmp_path)
+    assert health_status == 0, health_output
+
+
+def test_init_project_write_is_idempotent_and_preserves_files(tmp_path):
+    custom_config = tmp_path / "mint.yaml"
+    custom_config.write_text("# custom config\n", encoding="utf-8")
+    custom_spec = tmp_path / ".mint" / "specs" / "example.mint.md"
+    custom_spec.parent.mkdir(parents=True)
+    custom_spec.write_text("# custom spec\n", encoding="utf-8")
+
+    first_status, first_output = workflow.init_project(write=True, root=tmp_path)
+    second_status, second_output = workflow.init_project(write=True, root=tmp_path)
+
+    assert first_status == 0, first_output
+    assert second_status == 0, second_output
+    assert custom_config.read_text(encoding="utf-8") == "# custom config\n"
+    assert custom_spec.read_text(encoding="utf-8") == "# custom spec\n"
+    assert "Kept existing mint.yaml" in first_output
+    assert "Kept existing .mint/specs/example.mint.md" in first_output
+    assert "Kept existing test_scripts/run_unit_tests.sh" in second_output
 
 
 def test_render_top_module_renders_requirements_first(demo_project, monkeypatch):
@@ -220,6 +282,34 @@ def test_healthcheck_flags_non_executable_script(demo_project, monkeypatch):
     assert "not executable" in output and "chmod +x" in output
 
 
+def test_healthcheck_guides_missing_default_script(demo_project):
+    (demo_project.root / "test_scripts" / "run_unit_tests.sh").unlink()
+
+    status, output = workflow.healthcheck_module("taskstore", root=demo_project.root)
+
+    assert status == 1
+    assert "Unit script missing: test_scripts/run_unit_tests.sh" in output
+    assert "mint init --write" in output
+
+
+def test_render_reports_missing_script_without_traceback(demo_project):
+    config = demo_project.root / "mint.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "unit: test_scripts/run_unit_tests.sh",
+            "unit: test_scripts/missing.sh",
+        ),
+        encoding="utf-8",
+    )
+
+    status, output = workflow.render_module("taskstore", root=demo_project.root)
+
+    assert status == 1
+    assert "FAIL taskstore" in output
+    assert "Unit script missing: test_scripts/missing.sh" in output
+    assert "mint init --write" in output
+
+
 def test_healthcheck_flags_missing_required_spec(make_project, monkeypatch):
     project = make_project()
     project.write_spec(
@@ -259,12 +349,288 @@ def test_new_module_scaffolds_parseable_spec(make_project):
     status, output = workflow.new_module("calc-cli", requires=["taskstore"], root=project.root)
 
     assert status == 0, output
-    assert "specs/calc-cli.mint.md" in output
+    assert ".mint/specs/calc-cli.mint.md" in output
+    assert "Before rendering, add a deterministic template or set rendererProvider: model" in output
     text = project.spec_path("calc-cli").read_text(encoding="utf-8")
     assert "requires: [taskstore]" in text
     spec = workflow.parse_spec_file(project.spec_path("calc-cli"))
     assert spec.module == "calc-cli"
     assert spec.requires == ["taskstore"]
+    assert spec.renderer_provider is None
+
+
+def test_configured_specs_dir_routes_new_lint_and_context(make_project):
+    project = make_project()
+    config_path = project.root / "mint.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "specsDir: .mint/specs",
+            "specsDir: mint-specs",
+        ),
+        encoding="utf-8",
+    )
+
+    status, output = workflow.new_module("custom", root=project.root)
+
+    assert status == 0, output
+    assert "mint-specs/custom.mint.md" in output
+    assert (project.root / "mint-specs" / "custom.mint.md").is_file()
+    lint_status, lint_output = workflow.lint_module("custom", root=project.root)
+    assert lint_status == 0, lint_output
+    context = workflow.load_context("custom", project.root)
+    assert context.spec.path == project.root / "mint-specs" / "custom.mint.md"
+
+
+def test_new_module_can_scaffold_model_renderer_spec(make_project):
+    project = make_project()
+    status, output = workflow.new_module(
+        "notes",
+        renderer="model",
+        model="mock-model",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+
+    assert status == 0, output
+    assert "First live render/record: MINT_LIVE=1 mint live-smoke notes" in output
+    text = project.spec_path("notes").read_text(encoding="utf-8")
+    assert "rendererProvider: model" in text
+    assert "rendererModel: mock-model" in text
+    assert "rendererPromptVersion: notes-v1" in text
+    spec = workflow.parse_spec_file(project.spec_path("notes"))
+    assert spec.renderer_provider == "model"
+    assert spec.renderer_model == "mock-model"
+    assert spec.renderer_prompt_version == "notes-v1"
+
+
+def test_new_module_can_scaffold_typescript_spec(make_project):
+    project = make_project()
+    status, output = workflow.new_module(
+        "notes-ts",
+        stack="typescript-lib",
+        renderer="model",
+        model="mock-model",
+        prompt_version="notes-ts-v1",
+        root=project.root,
+    )
+
+    assert status == 0, output
+    text = project.spec_path("notes-ts").read_text(encoding="utf-8")
+    assert "stack: typescript-lib" in text
+    assert "tsc --noEmit" in text
+    assert "Vitest" in text
+    spec = workflow.parse_spec_file(project.spec_path("notes-ts"))
+    assert spec.stack == "typescript-lib"
+
+
+def test_new_module_rejects_model_without_model_renderer(make_project):
+    project = make_project()
+
+    status, output = workflow.new_module("notes", model="mock-model", root=project.root)
+
+    assert status == 1
+    assert "--model and --prompt-version require --renderer model" in output
+
+
+def test_new_module_requires_model_metadata_for_model_renderer(make_project):
+    project = make_project()
+
+    status, output = workflow.new_module("notes", renderer="model", root=project.root)
+
+    assert status == 1
+    assert "--renderer model requires both --model and --prompt-version" in output
+    assert "MODEL_ID" in output
+
+
+def test_new_module_rejects_placeholder_model_id(make_project):
+    project = make_project()
+
+    status, output = workflow.new_module(
+        "notes",
+        renderer="model",
+        model="MODEL_ID",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+
+    assert status == 1
+    assert "must be a real Anthropic model id" in output
+
+
+def test_next_guides_missing_spec_to_model_scaffold(make_project):
+    project = make_project()
+
+    status, output = workflow.next_module("notes", root=project.root)
+
+    assert status == 0
+    assert "State: no spec exists yet" in output
+    assert "mint new notes --renderer model" in output
+
+
+def test_next_project_guides_uninitialized_directory(tmp_path):
+    status, output = workflow.next_module(root=tmp_path)
+
+    assert status == 0
+    assert "State: no Mint project found" in output
+    assert "Next command: mint init --write" in output
+
+
+def test_next_project_guides_empty_project(make_project):
+    project = make_project()
+
+    status, output = workflow.next_module(root=project.root)
+
+    assert status == 0
+    assert "State: project has no specs yet" in output
+    assert "mint new MODULE --renderer model --model MODEL_ID" in output
+
+
+def test_next_project_uses_single_seed_spec(tmp_path):
+    status, output = workflow.init_project(write=True, root=tmp_path)
+    assert status == 0, output
+
+    status, output = workflow.next_module(root=tmp_path)
+
+    assert status == 0
+    assert "NEXT example" in output
+    assert "Next command: mint render example" in output
+
+
+def test_next_project_lists_multiple_specs(demo_project):
+    status, output = workflow.next_module(root=demo_project.root)
+
+    assert status == 0
+    assert "State: project has 2 specs" in output
+    assert "Next command: mint next <module>" in output
+    assert "tasklist" in output and "taskstore" in output
+
+
+def test_next_guides_local_spec_to_healthcheck_template_fix(make_project):
+    project = make_project()
+    workflow.new_module("notes", root=project.root)
+
+    status, output = workflow.next_module("notes", root=project.root)
+
+    assert status == 0
+    assert "State: pre-render checks need attention" in output
+    assert "Next command: mint healthcheck notes" in output
+    assert "no deterministic template 'notes' exists" in output
+
+
+def test_next_guides_model_spec_to_live_smoke_when_cassettes_missing(make_project):
+    project = make_project()
+    workflow.new_module(
+        "notes",
+        renderer="model",
+        model="mock-model",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+
+    status, output = workflow.next_module("notes", root=project.root)
+
+    assert status == 0
+    assert "Next command: MINT_LIVE=1 mint live-smoke notes" in output
+    assert "Replay cassettes missing for model renderer spec notes" in output
+
+
+def test_next_guides_unrendered_valid_spec_to_render(demo_project):
+    status, output = workflow.next_module("taskstore", root=demo_project.root)
+
+    assert status == 0
+    assert "State: ready to render" in output
+    assert "Next command: mint render taskstore" in output
+
+
+def test_next_guides_current_render_to_report(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    assert workflow.render_module("taskstore")[0] == 0
+
+    status, output = workflow.next_module("taskstore", root=demo_project.root)
+
+    assert status == 0
+    assert "State: generated output is current" in output
+    assert "Next command: mint report taskstore" in output
+
+
+def test_healthcheck_fails_for_model_spec_without_replay_cassettes(make_project):
+    project = make_project()
+    workflow.new_module(
+        "notes",
+        renderer="model",
+        model="mock-model",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+
+    status, output = workflow.healthcheck_module("notes", root=project.root)
+
+    assert status == 1
+    assert "Replay cassettes missing for model renderer spec notes" in output
+    assert "MINT_LIVE=1 mint live-smoke notes" in output
+
+
+def test_healthcheck_allows_missing_model_cassettes_in_live_mode(make_project, monkeypatch):
+    project = make_project()
+    workflow.new_module(
+        "notes",
+        renderer="model",
+        model="mock-model",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+    monkeypatch.setenv("MINT_LIVE", "1")
+
+    status, output = workflow.healthcheck_module("notes", root=project.root)
+
+    assert status == 0, output
+    assert "Replay cassettes missing" not in output
+
+
+def test_doctor_fails_for_model_spec_without_replay_cassettes(make_project):
+    project = make_project()
+    workflow.new_module(
+        "notes",
+        renderer="model",
+        model="mock-model",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+
+    status, output = workflow.doctor_project(root=project.root)
+
+    assert status == 1
+    assert "Replay cassettes missing for model renderer spec notes" in output
+
+
+def test_doctor_guides_uninitialized_directory(tmp_path):
+    status, output = workflow.doctor_project(root=tmp_path)
+
+    assert status == 1
+    assert "FAIL doctor" in output
+    assert "Next command: mint init --write" in output
+    assert "Then run: mint next" in output
+
+
+def test_doctor_guides_initialized_project_without_specs(make_project):
+    project = make_project()
+
+    status, output = workflow.doctor_project(root=project.root)
+
+    assert status == 1
+    assert "No specs found under .mint/specs/" in output
+    assert "mint new MODULE --renderer model --model MODEL_ID" in output
+    assert "mint next MODULE" in output
+
+
+def test_doctor_guides_missing_default_script(demo_project):
+    (demo_project.root / "test_scripts" / "run_conformance_tests.sh").unlink()
+
+    status, output = workflow.doctor_project(root=demo_project.root)
+
+    assert status == 1
+    assert "conformance script missing: test_scripts/run_conformance_tests.sh" in output
+    assert "mint init --write" in output
 
 
 def test_lint_flags_vague_acceptance(make_project):
@@ -307,7 +673,31 @@ def test_doctor_passes_for_demo_project(demo_project):
 
     assert status == 0, output
     assert "PASS doctor" in output
-    assert "Spec: specs/taskstore.mint.md" in output
+    assert "Spec: .mint/specs/taskstore.mint.md" in output
+
+
+def test_doctor_warns_for_local_spec_without_template(make_project):
+    project = make_project()
+    workflow.new_module("notes", root=project.root)
+
+    status, output = workflow.doctor_project(root=project.root)
+
+    assert status == 0, output
+    assert "WARN" in output
+    assert "no deterministic template 'notes' exists" in output
+    assert "rendererProvider: model" in output
+
+
+def test_healthcheck_fails_for_local_spec_without_template(make_project):
+    project = make_project()
+    workflow.new_module("notes", root=project.root)
+
+    status, output = workflow.healthcheck_module("notes", root=project.root)
+
+    assert status == 1
+    assert "FAIL notes" in output
+    assert "no deterministic template 'notes' exists" in output
+    assert "MINT_LIVE=1 mint live-smoke notes" in output
 
 
 def test_render_writes_run_report_and_report_command_reads_it(demo_project, monkeypatch):
@@ -327,6 +717,68 @@ def test_render_writes_run_report_and_report_command_reads_it(demo_project, monk
     assert status == 0
     assert "RUN REPORT taskstore" in output
     assert "Report JSON: generated/taskstore/.mintgen/reports/latest.json" in output
+
+
+def test_generated_script_env_defaults_to_current_interpreter(make_project):
+    project = make_project()
+    project.write_spec("calc", CALC_SPEC)
+    script = project.root / "test_scripts" / "print_python_bin.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$PYTHON_BIN\"\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    context = workflow.load_context("calc", project.root)
+
+    result = workflow.run_script(context, "test_scripts/print_python_bin.sh")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == sys.executable
+    assert test_quality._script_env(context, [])["PYTHON_BIN"] == sys.executable
+
+
+def test_mutation_probe_fails_when_baseline_conformance_script_fails(tmp_path):
+    root = tmp_path
+    generated = root / "generated" / "calc"
+    conformance = root / "conformance" / "calc"
+    (generated / "src" / "calc").mkdir(parents=True)
+    conformance.mkdir(parents=True)
+    (generated / "src" / "calc" / "__init__.py").write_text(
+        "def add(a, b):\n    return a + b\n",
+        encoding="utf-8",
+    )
+    scripts = root / "test_scripts"
+    scripts.mkdir()
+    unit = scripts / "unit.sh"
+    unit.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    unit.chmod(0o755)
+    conformance_script = scripts / "conformance.sh"
+    conformance_script.write_text("#!/usr/bin/env bash\nexit 2\n", encoding="utf-8")
+    conformance_script.chmod(0o755)
+    context = SimpleNamespace(
+        root=root,
+        module="calc",
+        generated_dir=generated,
+        conformance_dir=conformance,
+        config=SimpleNamespace(
+            scripts=SimpleNamespace(
+                unit="test_scripts/unit.sh",
+                conformance="test_scripts/conformance.sh",
+            ),
+            test_quality=SimpleNamespace(
+                mutation_probe=True,
+                mutation_max_candidates=3,
+            ),
+        ),
+    )
+
+    verdict = test_quality._run_mutation_probe(context, required_src=[])
+
+    assert verdict["status"] == "failed"
+    assert "mutation baseline test run failed" in verdict["reason"]
+    assert verdict["baseline"]["conformance"]["exitCode"] == 2
 
 
 # --------------------------------------------------------------------------- #

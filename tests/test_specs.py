@@ -128,6 +128,14 @@ def test_imports_and_requires_parsed(tmp_path):
     assert spec.requires == ["base"]
 
 
+@pytest.mark.parametrize("field", ["imports", "requires"])
+@pytest.mark.parametrize("value", ["../base", "base/child", ".", ".."])
+def test_dependency_names_must_be_module_slugs(tmp_path, field, value):
+    text = GOOD.replace(f"{field}: []", f"{field}: [{value}]")
+    with pytest.raises(MintError, match=f"Invalid {field} module reference"):
+        parse_spec_file(write(tmp_path, text))
+
+
 def test_template_key_optional(tmp_path):
     spec = parse_spec_file(write(tmp_path, GOOD))
     assert spec.template is None

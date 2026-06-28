@@ -15,7 +15,7 @@ CALC_MODULES = ["lexer", "parser", "evaluator", "calc-cli"]
 def make_calc_graph_project(make_project):
     project = make_project()
     for module in CALC_MODULES:
-        shutil.copy(ROOT / "specs" / f"{module}.mint.md", project.spec_path(module))
+        shutil.copy(ROOT / ".mint" / "specs" / f"{module}.mint.md", project.spec_path(module))
     cassette_src = ROOT / "resources" / "cassettes"
     cassette_dst = project.root / "resources" / "cassettes"
     cassette_dst.parent.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def make_self_host_project(make_project):
     project = make_project()
-    shutil.copy(ROOT / "specs" / "mint-hashing.mint.md", project.spec_path("mint-hashing"))
+    shutil.copy(ROOT / ".mint" / "specs" / "mint-hashing.mint.md", project.spec_path("mint-hashing"))
     cassette_src = ROOT / "resources" / "cassettes"
     cassette_dst = project.root / "resources" / "cassettes"
     cassette_dst.parent.mkdir(parents=True, exist_ok=True)
