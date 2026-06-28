@@ -13,6 +13,8 @@ import subprocess
 import sys
 from typing import Any
 
+from .stacks import adapter_for_stack
+
 
 @dataclass(frozen=True)
 class MutationCandidate:
@@ -31,6 +33,7 @@ def evaluate_test_quality(
     required_src: list[Path],
 ) -> dict[str, Any]:
     """Run traceability, coverage, and mutation checks for one rendered unit."""
+    adapter = adapter_for_stack(context.spec.stack)
     config = context.config.test_quality
     if not config.enabled:
         return {
@@ -39,6 +42,15 @@ def evaluate_test_quality(
             "coverage": {"status": "skipped"},
             "traceability": [],
             "mutation": {"status": "skipped"},
+        }
+    if not adapter.supports_test_quality:
+        reason = f"test-quality is not implemented for {context.spec.stack} yet"
+        return {
+            "status": "skipped",
+            "reason": reason,
+            "coverage": {"status": "skipped", "reason": reason},
+            "traceability": [],
+            "mutation": {"status": "skipped", "reason": reason},
         }
 
     traceability = _trace_acceptance_criteria(context, unit)
@@ -270,7 +282,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import trace
 
 import pytest
 
@@ -292,11 +303,41 @@ pytest_args = ["tests", "-q"] if target == "unit" else [str(conformance), "-q"]
 
 stdout = io.StringIO()
 stderr = io.StringIO()
-tracer = trace.Trace(count=True, trace=False, ignoredirs=[sys.prefix, sys.exec_prefix])
-with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-    exit_code = tracer.runfunc(pytest.main, pytest_args)
+counts = {}
+src_resolved = src.resolve()
 
-counts = tracer.results().counts
+
+def line_counter(relpath):
+    def count_line(frame, event, arg):
+        if event == "line":
+            key = (relpath, frame.f_lineno)
+            counts[key] = counts.get(key, 0) + 1
+        return count_line
+
+    return count_line
+
+
+def count_generated_calls(frame, event, arg):
+    if event != "call":
+        return None
+    try:
+        path = Path(frame.f_code.co_filename).resolve()
+        relpath = path.relative_to(src_resolved).as_posix()
+    except (OSError, ValueError):
+        return None
+    if path.name == "_mint_provenance.py":
+        return None
+    return line_counter(relpath)
+
+
+previous_trace = sys.gettrace()
+sys.settrace(count_generated_calls)
+try:
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        exit_code = pytest.main(pytest_args)
+finally:
+    sys.settrace(previous_trace)
+
 files = []
 covered_total = 0
 line_total = 0
@@ -312,8 +353,8 @@ for path in sorted(src.rglob("*.py")):
     }
     covered = {
         lineno
-        for (filename, lineno), count in counts.items()
-        if Path(filename).resolve() == path and count > 0
+        for (relpath, lineno), count in counts.items()
+        if relpath == rel and count > 0
     }
     covered_executable = executable & covered
     if executable:
@@ -341,6 +382,10 @@ print(json.dumps({
 def _run_mutation_probe(context: Any, *, required_src: list[Path]) -> dict[str, Any]:
     if not context.config.test_quality.mutation_probe:
         return {"status": "skipped", "reason": "mutationProbe is false"}
+
+    baseline = _run_mutation_baseline(context, required_src=required_src)
+    if baseline["status"] == "failed":
+        return baseline
 
     candidates = _mutation_candidates(context.generated_dir / "src")
     max_candidates = context.config.test_quality.mutation_max_candidates
@@ -373,6 +418,37 @@ def _run_mutation_probe(context: Any, *, required_src: list[Path]) -> dict[str, 
         "candidateCount": len(candidates),
         "testedCandidates": len(tested),
         "survivors": [],
+    }
+
+
+def _run_mutation_baseline(context: Any, *, required_src: list[Path]) -> dict[str, Any]:
+    unit_result = _run_project_script(context, context.config.scripts.unit, required_src)
+    conf_result = _run_project_script(context, context.config.scripts.conformance, required_src)
+    failures: list[str] = []
+    if unit_result.returncode != 0:
+        failures.append(f"unit script exited {unit_result.returncode}")
+    if conf_result.returncode != 0:
+        failures.append(f"conformance script exited {conf_result.returncode}")
+    if not failures:
+        return {"status": "passed"}
+    return {
+        "status": "failed",
+        "reason": "mutation baseline test run failed: " + ", ".join(failures),
+        "candidateCount": 0,
+        "testedCandidates": 0,
+        "survivors": [],
+        "baseline": {
+            "unit": {
+                "exitCode": unit_result.returncode,
+                "stdout": unit_result.stdout,
+                "stderr": unit_result.stderr,
+            },
+            "conformance": {
+                "exitCode": conf_result.returncode,
+                "stdout": conf_result.stdout,
+                "stderr": conf_result.stderr,
+            },
+        },
     }
 
 
@@ -475,6 +551,7 @@ def _script_env(context: Any, required_src: list[Path]) -> dict[str, str]:
         env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(path) for path in required_src)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.setdefault("PYTHONPYCACHEPREFIX", "/private/tmp/mint-pycache")
+    env.setdefault("PYTHON_BIN", sys.executable)
     return env
 
 

@@ -24,6 +24,7 @@ from .renderer import (
 )
 from .renderer.base import Renderer
 from .renderer.model import ModelClient, ModelOutputError
+from .renderer.templates import known_templates
 from .specs import FunctionalUnit, Spec, parse_spec_file
 from .state import (
     append_render_log,
@@ -37,10 +38,161 @@ from .state import (
     write_attempt,
     write_metadata,
 )
+from .stacks import StackAdapter, adapter_for_stack, known_stacks
 from .test_quality import evaluate_test_quality, format_test_quality_verdict
 
-# pytest exit code 5 means "no tests were collected".
-PYTEST_NO_TESTS = 5
+DEFAULT_SPECS_DIR = ".mint/specs"
+
+INIT_SKELETON = """mint Phase 0 skeleton
+- config: mint.yaml
+- specs: .mint/specs/example.mint.md
+- resources: resources/
+- generated output: generated/
+- conformance tests: conformance/
+- scripts: test_scripts/
+"""
+
+DEFAULT_MINT_YAML = """version: 1
+defaultStack: python-cli
+specsDir: .mint/specs
+generatedDir: generated
+conformanceDir: conformance
+scripts:
+  unit: test_scripts/run_unit_tests.sh
+  conformance: test_scripts/run_conformance_tests.sh
+  prepare: test_scripts/prepare_environment.sh
+renderer:
+  provider: local
+  model: deterministic-python-cli-v0
+  promptVersion: v0
+limits:
+  unitRetries: 1
+  conformanceRetries: 1
+  maxFunctionalUnitsPerRender: 20
+  maxModelResponseChars: 200000
+  maxRenderAttempts: 0
+  maxRenderTokensEstimate: 0
+testQuality:
+  enabled: true
+  minCoveragePercent: 60
+  mutationProbe: true
+  mutationMaxCandidates: 3
+"""
+
+PREPARE_ENVIRONMENT_SH = """#!/usr/bin/env bash
+set -euo pipefail
+
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+
+"$PYTHON_BIN" -m pip --version >/dev/null
+
+if ! "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
+  echo "pytest is required for $PYTHON_BIN. Install with: $PYTHON_BIN -m pip install -e '.[dev]'" >&2
+  exit 1
+fi
+
+echo "Python and pytest are available."
+"""
+
+RUN_UNIT_TESTS_SH = """#!/usr/bin/env bash
+set -euo pipefail
+
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+MODULE="${1:-example}"
+GENERATED_DIR="${MINT_GENERATED_DIR:-generated/$MODULE}"
+
+if [ ! -d "$GENERATED_DIR" ]; then
+  echo "Generated module directory not found: $GENERATED_DIR" >&2
+  exit 1
+fi
+
+cd "$GENERATED_DIR"
+export PYTHONPATH="$PWD/src:${MINT_REQUIRED_SRC:-}:${PYTHONPATH:-}"
+
+if ! "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
+  echo "pytest is required for $PYTHON_BIN. Install with: $PYTHON_BIN -m pip install -e '.[dev]'" >&2
+  exit 1
+fi
+
+"$PYTHON_BIN" -m pytest
+"""
+
+RUN_CONFORMANCE_TESTS_SH = """#!/usr/bin/env bash
+set -euo pipefail
+
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+MODULE="${1:-example}"
+GENERATED_DIR="${MINT_GENERATED_DIR:-generated/$MODULE}"
+CONFORMANCE_DIR="${MINT_CONFORMANCE_DIR:-conformance/$MODULE}"
+
+if [ ! -d "$GENERATED_DIR" ]; then
+  echo "Generated module directory not found: $GENERATED_DIR" >&2
+  exit 1
+fi
+
+if [ ! -d "$CONFORMANCE_DIR" ]; then
+  echo "Conformance test directory not found: $CONFORMANCE_DIR" >&2
+  exit 1
+fi
+
+case "$GENERATED_DIR" in
+  /*) GENERATED_SRC="$GENERATED_DIR/src" ;;
+  *) GENERATED_SRC="$PWD/$GENERATED_DIR/src" ;;
+esac
+
+export PYTHONPATH="$GENERATED_SRC:${MINT_REQUIRED_SRC:-}:${PYTHONPATH:-}"
+
+if ! "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
+  echo "pytest is required for $PYTHON_BIN. Install with: $PYTHON_BIN -m pip install -e '.[dev]'" >&2
+  exit 1
+fi
+
+"$PYTHON_BIN" -m pytest "$CONFORMANCE_DIR"
+"""
+
+EXAMPLE_MINT_MD = """---
+module: example
+description: Example task-list CLI and library
+imports: []
+requires: []
+stack: python-cli
+---
+
+## definitions
+
+- Task: item with text and a completed flag.
+
+## implementation
+
+- Use Python 3.12.
+- Expose a small library API under `src/example/`.
+- Provide a console command named `example-todo`.
+- Unit tests use pytest.
+
+## test
+
+- Conformance tests use pytest.
+- Conformance tests call the public library API or CLI, not private helpers.
+
+## functional
+
+- id: FR1
+  title: Add creates a task
+  spec:
+    - Calling `example-todo add "Buy milk"` stores a Task with that text.
+    - Newly added tasks are incomplete.
+  acceptance:
+    - The add command exits 0, writes `[ ] Buy milk`, and a later list command prints `[ ] Buy milk`.
+
+- id: FR2
+  title: List shows tasks in insertion order
+  spec:
+    - Calling `example-todo list` prints all stored tasks.
+    - Tasks appear in the order they were added.
+  acceptance:
+    - After adding "Buy milk" and then "Write notes", list output prints "Buy milk" before "Write notes".
+    - With no stored tasks, list exits 0 and prints no task rows.
+"""
 
 
 @dataclass(frozen=True)
@@ -53,13 +205,17 @@ class ModuleContext:
     conformance_dir: Path
 
     def spec_path(self, module: str) -> Path:
-        return self.root / "specs" / f"{module}.mint.md"
+        return self.root / self.config.specs_dir / f"{module}.mint.md"
 
     def generated_dir_for(self, module: str) -> Path:
         return self.root / self.config.generated_dir / module
 
     def src_dir_for(self, module: str) -> Path:
         return self.generated_dir_for(module) / "src"
+
+    @property
+    def stack_adapter(self) -> StackAdapter:
+        return adapter_for_stack(self.spec.stack)
 
 
 @dataclass(frozen=True)
@@ -122,7 +278,7 @@ class PatchAttemptFailure(Exception):
 def load_context(module: str, root: Path | None = None) -> ModuleContext:
     root = (root or Path.cwd()).resolve()
     config = load_config(root / "mint.yaml")
-    spec = parse_spec_file(root / "specs" / f"{module}.mint.md")
+    spec = parse_spec_file(root / config.specs_dir / f"{module}.mint.md")
     if spec.module != module:
         raise MintError(
             f"Spec module '{spec.module}' does not match requested module '{module}'. "
@@ -133,21 +289,26 @@ def load_context(module: str, root: Path | None = None) -> ModuleContext:
     return ModuleContext(root, module, config, spec, generated_dir, conformance_dir)
 
 
-def _spec_loader(root: Path):
+def _spec_loader(root: Path, specs_dir: str):
     def load(module: str) -> Spec:
-        return parse_spec_file(root / "specs" / f"{module}.mint.md")
+        spec = parse_spec_file(root / specs_dir / f"{module}.mint.md")
+        if spec.module != module:
+            raise MintError(
+                f"Spec module '{spec.module}' does not match requested module '{module}'."
+            )
+        return spec
 
     return load
 
 
 def resolve_required_order(context: ModuleContext) -> list[str]:
     """Transitive required modules in dependency order, excluding the module itself."""
-    order = build_render_order(context.module, _spec_loader(context.root))
+    order = build_render_order(context.module, _spec_loader(context.root, context.config.specs_dir))
     return [module for module in order if module != context.module]
 
 
 def resolve_imported_specs(context: ModuleContext) -> list[Spec]:
-    loader = _spec_loader(context.root)
+    loader = _spec_loader(context.root, context.config.specs_dir)
     return [loader(name) for name in context.spec.imports]
 
 
@@ -187,10 +348,129 @@ def parse_module(module: str) -> str:
     return json.dumps(context.spec.to_ir(), indent=2, sort_keys=True) + "\n"
 
 
+def configured_specs_dir(root: Path) -> str:
+    config_path = root / "mint.yaml"
+    if not config_path.exists():
+        return DEFAULT_SPECS_DIR
+    return load_config(config_path).specs_dir
+
+
+def init_project(*, write: bool = False, root: Path | None = None) -> tuple[int, str]:
+    root = (root or Path.cwd()).resolve()
+    if not write:
+        return 0, INIT_SKELETON + "- Use `mint init --write` to create missing files.\n"
+
+    lines = ["INIT mint project"]
+    failures: list[str] = []
+    specs_dir = DEFAULT_SPECS_DIR
+    config_path = root / "mint.yaml"
+    if config_path.exists():
+        try:
+            specs_dir = load_config(config_path).specs_dir
+        except MintError:
+            specs_dir = DEFAULT_SPECS_DIR
+
+    for rel in [specs_dir, "resources", "generated", "conformance", "test_scripts"]:
+        path = root / rel
+        if path.exists():
+            if path.is_dir():
+                lines.append(f"- Kept existing {rel}/")
+            else:
+                failures.append(f"{rel}/ is blocked by a non-directory path")
+        else:
+            path.mkdir(parents=True)
+            lines.append(f"- Created {rel}/")
+
+    if failures:
+        output = ["FAIL init", *lines]
+        output.extend(f"- FAIL: {failure}" for failure in failures)
+        return 1, "\n".join(output) + "\n"
+
+    for rel in ["resources/.gitkeep", "generated/.gitkeep", "conformance/.gitkeep"]:
+        _write_init_file(root, rel, "", executable=False, lines=lines, failures=failures)
+
+    _write_init_file(root, "mint.yaml", DEFAULT_MINT_YAML, executable=False, lines=lines, failures=failures)
+    _write_init_file(
+        root,
+        f"{specs_dir}/example.mint.md",
+        EXAMPLE_MINT_MD,
+        executable=False,
+        lines=lines,
+        failures=failures,
+    )
+    for rel, contents in [
+        ("test_scripts/prepare_environment.sh", PREPARE_ENVIRONMENT_SH),
+        ("test_scripts/run_unit_tests.sh", RUN_UNIT_TESTS_SH),
+        ("test_scripts/run_conformance_tests.sh", RUN_CONFORMANCE_TESTS_SH),
+    ]:
+        _write_init_file(root, rel, contents, executable=True, lines=lines, failures=failures)
+
+    if failures:
+        output = ["FAIL init", *lines]
+        output.extend(f"- FAIL: {failure}" for failure in failures)
+        return 1, "\n".join(output) + "\n"
+
+    lines.extend(
+        [
+            "- First smoke test: mint render example",
+            "- New module: choose a module slug and model id, then run `mint new MODULE --renderer model --model MODEL_ID --prompt-version MODULE-v1`",
+            "- Guided next step: mint next",
+        ]
+    )
+    return 0, "\n".join(lines) + "\n"
+
+
+def _write_init_file(
+    root: Path,
+    rel: str,
+    contents: str,
+    *,
+    executable: bool,
+    lines: list[str],
+    failures: list[str],
+) -> None:
+    path = root / rel
+    if path.exists():
+        if path.is_file():
+            lines.append(f"- Kept existing {rel}")
+            if executable and not os.access(path, os.X_OK):
+                lines.append(f"- WARN: {rel} is not executable; run chmod +x {rel}")
+        else:
+            failures.append(f"{rel} is blocked by a non-file path")
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(contents, encoding="utf-8")
+    if executable:
+        path.chmod(0o755)
+    lines.append(f"- Wrote {rel}")
+
+
+def _has_value(value: str | None) -> bool:
+    return value is not None and value.strip() != ""
+
+
+def _is_placeholder_model(value: str | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().lower().replace("_", "-")
+    return normalized in {
+        "<model-id>",
+        "model-id",
+        "modelid",
+        "your-model-id",
+        "your-anthropic-model-id",
+    }
+
+
 def new_module(
     module: str,
     *,
     requires: list[str] | None = None,
+    stack: str | None = None,
+    renderer: str | None = None,
+    model: str | None = None,
+    prompt_version: str | None = None,
     root: Path | None = None,
 ) -> tuple[int, str]:
     root = (root or Path.cwd()).resolve()
@@ -201,9 +481,47 @@ def new_module(
             f"- Invalid module name: {module}\n"
             "- Use a lowercase slug like calc-cli or taskstore.\n",
         )
+    selected_stack = stack or "python-lib"
+    try:
+        adapter_for_stack(selected_stack)
+    except MintError:
+        return (
+            1,
+            "FAIL new\n"
+            f"- Unsupported stack: {selected_stack}\n"
+            f"- Use one of: {', '.join(known_stacks())}.\n",
+        )
+    if renderer is not None and renderer not in {"local", "model"}:
+        return (
+            1,
+            "FAIL new\n"
+            f"- Invalid renderer: {renderer}\n"
+            "- Use one of: local, model.\n",
+        )
+    if renderer == "model" and (not _has_value(model) or not _has_value(prompt_version)):
+        return (
+            1,
+            "FAIL new\n"
+            "- --renderer model requires both --model and --prompt-version.\n"
+            f"- Choose a real Anthropic model id, then run: mint new {module} "
+            f"--renderer model --model MODEL_ID --prompt-version {module}-v1\n",
+        )
+    if renderer == "model" and _is_placeholder_model(model):
+        return (
+            1,
+            "FAIL new\n"
+            f"- --model must be a real Anthropic model id, not {model!r}.\n"
+            "- Replace MODEL_ID with the model you want to use before running the command.\n",
+        )
+    if renderer != "model" and (model or prompt_version):
+        return (
+            1,
+            "FAIL new\n"
+            "- --model and --prompt-version require --renderer model.\n",
+        )
 
     deps = requires or []
-    spec_path = root / "specs" / f"{module}.mint.md"
+    spec_path = root / configured_specs_dir(root) / f"{module}.mint.md"
     if spec_path.exists():
         return (
             1,
@@ -211,20 +529,31 @@ def new_module(
         )
 
     spec_path.parent.mkdir(parents=True, exist_ok=True)
-    spec_path.write_text(_starter_spec(module, deps), encoding="utf-8")
+    spec_path.write_text(
+        _starter_spec(
+            module,
+            deps,
+            stack=selected_stack,
+            renderer=renderer,
+            model=model,
+            prompt_version=prompt_version,
+        ),
+        encoding="utf-8",
+    )
+    hints = _new_module_hints(module, renderer)
     return (
         0,
         "NEW "
         + module
         + "\n"
         + f"- Wrote {spec_path.relative_to(root).as_posix()}\n"
-        + f"- Next: mint lint {module}\n",
+        + "".join(f"- {hint}\n" for hint in hints),
     )
 
 
 def lint_module(module: str, *, root: Path | None = None) -> tuple[int, str]:
     root = (root or Path.cwd()).resolve()
-    path = root / "specs" / f"{module}.mint.md"
+    path = root / configured_specs_dir(root) / f"{module}.mint.md"
     failures: list[str] = []
     warnings: list[str] = []
 
@@ -269,6 +598,157 @@ def lint_module(module: str, *, root: Path | None = None) -> tuple[int, str]:
     return (1 if failures else 0), "\n".join(lines) + "\n"
 
 
+def next_module(module: str | None = None, *, root: Path | None = None) -> tuple[int, str]:
+    root = (root or Path.cwd()).resolve()
+    if module is None:
+        return next_project(root=root)
+
+    spec_path = root / configured_specs_dir(root) / f"{module}.mint.md"
+    lines = [f"NEXT {module}"]
+    if not spec_path.exists():
+        lines.extend(
+            [
+                "- State: no spec exists yet.",
+                f"- Next command: choose a model id, then run `mint new {module} --renderer model --model MODEL_ID --prompt-version {module}-v1`",
+                "- Then edit the spec, run `mint lint`, and record once with `MINT_LIVE=1 mint live-smoke`.",
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    lint_status, lint_output = lint_module(module, root=root)
+    if lint_status != 0:
+        lines.extend(
+            [
+                "- State: spec needs lint fixes.",
+                f"- Next command: mint lint {module}",
+                "Details:",
+                *_prefix_lines(lint_output, "  "),
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    try:
+        context = load_context(module, root)
+    except MintError as exc:
+        lines.extend(
+            [
+                "- State: spec could not be loaded.",
+                f"- Next command: mint lint {module}",
+                f"- {exc}",
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    health_status, health_output = healthcheck_module(module, root=root)
+    if health_status != 0:
+        command = f"mint healthcheck {module}"
+        replay_issue = model_replay_issue(context.spec, context.config, context.root)
+        if replay_issue:
+            command = f"MINT_LIVE=1 mint live-smoke {module}"
+        lines.extend(
+            [
+                "- State: pre-render checks need attention.",
+                f"- Next command: {command}",
+                "Details:",
+                *_prefix_lines(health_output, "  "),
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    hashes = compute_context_hashes(context)
+    metadata = load_metadata(context.generated_dir)
+    plan = determine_render_plan(context, metadata, None, None, False, hashes)
+    if plan.noop:
+        lines.extend(
+            [
+                "- State: generated output is current.",
+                f"- Next command: mint report {module}",
+                "- To change behavior, edit the spec and run `mint render` again.",
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    command = f"mint render {module}"
+    if metadata is not None and plan.start_index > 0:
+        command += f" --from {context.spec.functional_units[plan.start_index].id}"
+    lines.extend(
+        [
+            f"- State: ready to render ({plan.reason}).",
+            f"- Next command: {command}",
+        ]
+    )
+    return 0, "\n".join(lines) + "\n"
+
+
+def next_project(*, root: Path | None = None) -> tuple[int, str]:
+    root = (root or Path.cwd()).resolve()
+    lines = ["NEXT"]
+    if not (root / "mint.yaml").exists():
+        lines.extend(
+            [
+                "- State: no Mint project found in this directory.",
+                "- Next command: mint init --write",
+                "- Then run: mint next",
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    try:
+        config = load_config(root / "mint.yaml")
+    except MintError as exc:
+        lines.extend(
+            [
+                "- State: config could not be loaded.",
+                "- Next command: mint doctor",
+                f"- {exc}",
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    spec_dir = root / config.specs_dir
+    spec_paths = sorted(spec_dir.glob("*.mint.md"))
+    if not spec_paths:
+        lines.extend(
+            [
+                "- State: project has no specs yet.",
+                "- Next command: choose a module slug and model id, then run `mint new MODULE --renderer model --model MODEL_ID --prompt-version MODULE-v1`",
+                "- Then run: mint next MODULE",
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    modules: list[str] = []
+    parse_failures: list[str] = []
+    for spec_path in spec_paths:
+        try:
+            modules.append(parse_spec_file(spec_path).module)
+        except MintError as exc:
+            parse_failures.append(f"{spec_path.relative_to(root).as_posix()}: {exc}")
+
+    if parse_failures:
+        lines.extend(
+            [
+                "- State: at least one spec cannot be parsed.",
+                "- Next command: mint lint <module>",
+                "Details:",
+                *(f"  - {failure}" for failure in parse_failures),
+            ]
+        )
+        return 0, "\n".join(lines) + "\n"
+
+    if len(modules) == 1:
+        return next_module(modules[0], root=root)
+
+    lines.extend(
+        [
+            f"- State: project has {len(modules)} specs.",
+            "- Next command: mint next <module>",
+            "- Modules: " + ", ".join(sorted(modules)),
+        ]
+    )
+    return 0, "\n".join(lines) + "\n"
+
+
 def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
     root = (root or Path.cwd()).resolve()
     failures: list[str] = []
@@ -278,7 +758,13 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
     try:
         config = load_config(root / "mint.yaml")
     except MintError as exc:
-        return 1, f"FAIL doctor\n- {exc}\n- Fix: create mint.yaml or run from a mint project root.\n"
+        return (
+            1,
+            "FAIL doctor\n"
+            f"- {exc}\n"
+            "- Next command: mint init --write\n"
+            "- Then run: mint next\n",
+        )
 
     messages.append(f"Config: {config.path.relative_to(root).as_posix()}")
     for label, script in [
@@ -288,7 +774,7 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
     ]:
         script_path = root / script
         if not script_path.exists():
-            failures.append(f"{label} script missing: {script} (fix: create the file)")
+            failures.append(f"{label} script missing: {script} (fix: {_missing_file_fix()})")
         elif not os.access(script_path, os.X_OK):
             failures.append(f"{label} script is not executable: {script} (fix: chmod +x {script})")
         else:
@@ -310,9 +796,15 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
     else:
         failures.append("pytest is not runnable (fix: pip install -e '.[dev]')")
 
-    spec_paths = sorted((root / "specs").glob("*.mint.md"))
+    spec_dir = root / config.specs_dir
+    spec_paths = sorted(spec_dir.glob("*.mint.md"))
     if not spec_paths:
-        failures.append("No specs found under specs/ (fix: mint new <module>)")
+        failures.append(
+            f"No specs found under {config.specs_dir}/ "
+            "(fix: run `mint new MODULE --renderer model --model MODEL_ID --prompt-version MODULE-v1`, "
+            "then `mint next MODULE`)"
+        )
+    model_specs: list[str] = []
     for spec_path in spec_paths:
         try:
             spec = parse_spec_file(spec_path)
@@ -320,22 +812,33 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
             failures.append(str(exc))
             continue
         messages.append(f"Spec: {spec_path.relative_to(root).as_posix()}")
+        try:
+            adapter = adapter_for_stack(spec.stack)
+        except MintError as exc:
+            failures.append(str(exc))
+            continue
+        messages.append(f"Stack: {spec.module} -> {adapter.name} ({spec.stack})")
+        if adapter.name != "python":
+            stack_health = adapter.healthcheck(load_context(spec.module, root))
+            messages.extend(
+                message for message in stack_health.messages if not message.startswith("Stack adapter:")
+            )
+            failures.extend(stack_health.failures)
+        template_issue = local_template_issue(spec, config)
+        if template_issue:
+            warnings.append(template_issue)
+        provider = selected_renderer_provider(spec, config)
+        if provider in {"model", "anthropic"}:
+            model_specs.append(spec.module)
+            replay_issue = model_replay_issue(spec, config, root)
+            if replay_issue:
+                failures.append(replay_issue)
         for dep in sorted(set(spec.imports + spec.requires)):
-            dep_path = root / "specs" / f"{dep}.mint.md"
+            dep_path = root / config.specs_dir / f"{dep}.mint.md"
             if not dep_path.exists():
                 failures.append(
                     f"{spec.module} references missing spec {dep_path.relative_to(root).as_posix()}"
                 )
-
-    model_specs: list[str] = []
-    for spec_path in spec_paths:
-        try:
-            spec = parse_spec_file(spec_path)
-        except MintError:
-            continue
-        provider = spec.renderer_provider or config.renderer.provider
-        if provider in {"model", "anthropic"}:
-            model_specs.append(spec.module)
 
     if model_specs and os.environ.get("MINT_LIVE") != "1":
         cassette_root = root / "resources" / "cassettes"
@@ -344,12 +847,6 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
             messages.append(
                 f"Replay cassettes: {len(cassettes)} in "
                 f"{cassette_root.relative_to(root).as_posix()}"
-            )
-        else:
-            failures.append(
-                "Replay cassettes missing for model renderer specs "
-                f"({', '.join(sorted(model_specs))}) "
-                "(fix: MINT_LIVE=1 mint live-smoke <module>)"
             )
     elif model_specs:
         warnings.append("MINT_LIVE=1 is set; doctor will allow live recording.")
@@ -364,7 +861,12 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
     return (1 if failures else 0), "\n".join(lines) + "\n"
 
 
-def healthcheck_module(module: str, *, root: Path | None = None) -> tuple[int, str]:
+def healthcheck_module(
+    module: str,
+    *,
+    root: Path | None = None,
+    allow_missing_replay: bool = False,
+) -> tuple[int, str]:
     messages: list[str] = []
     failures: list[str] = []
 
@@ -375,6 +877,28 @@ def healthcheck_module(module: str, *, root: Path | None = None) -> tuple[int, s
         return 1, f"FAIL {module}\n- {exc}\n"
 
     messages.append(f"Config parsed: {context.config.path.relative_to(context.root).as_posix()}")
+    try:
+        adapter = context.stack_adapter
+    except MintError as exc:
+        adapter = None
+        failures.append(str(exc))
+    else:
+        stack_health = adapter.healthcheck(context)
+        messages.extend(stack_health.messages)
+        failures.extend(stack_health.failures)
+
+    template_issue = local_template_issue(context.spec, context.config)
+    if template_issue:
+        failures.append(template_issue)
+    replay_issue = model_replay_issue(context.spec, context.config, context.root)
+    if replay_issue and not allow_missing_replay:
+        failures.append(replay_issue)
+    replay_count = matching_replay_cassette_count(context.spec, context.config, context.root)
+    if replay_count:
+        messages.append(
+            f"Replay cassette candidates: {replay_count} for {context.module} "
+            f"in {(context.root / 'resources' / 'cassettes').relative_to(context.root).as_posix()}"
+        )
 
     # Imports and requires must resolve to real spec files.
     for name in context.spec.imports:
@@ -388,19 +912,6 @@ def healthcheck_module(module: str, *, root: Path | None = None) -> tuple[int, s
             messages.append(f"Requires (build order): {', '.join(required_order)}")
     except MintError as exc:
         failures.append(str(exc))
-
-    for label, script in [
-        ("Prepare script", context.config.scripts.prepare),
-        ("Unit script", context.config.scripts.unit),
-        ("Conformance script", context.config.scripts.conformance),
-    ]:
-        path = context.root / script
-        if not path.exists():
-            failures.append(f"{label} missing: {script}")
-        elif not os.access(path, os.X_OK):
-            failures.append(f"{label} is not executable: {script} (fix: chmod +x {script})")
-        else:
-            messages.append(f"{label}: {script}")
 
     for unit in context.spec.functional_units:
         for resource in unit.resources:
@@ -429,6 +940,73 @@ def healthcheck_module(module: str, *, root: Path | None = None) -> tuple[int, s
     lines.extend(f"- {message}" for message in messages)
     lines.extend(f"- {failure}" for failure in failures)
     return (1 if failures else 0), "\n".join(lines) + "\n"
+
+
+def selected_renderer_provider(spec: Spec, config: MintConfig) -> str:
+    return (spec.renderer_provider or config.renderer.provider).strip().lower()
+
+
+def _missing_file_fix() -> str:
+    return "create the file, or run `mint init --write` to restore default project files"
+
+
+def local_template_issue(spec: Spec, config: MintConfig) -> str | None:
+    provider = selected_renderer_provider(spec, config)
+    if provider not in {"local", "deterministic"}:
+        return None
+    template = spec.template or spec.module
+    templates = known_templates()
+    if template in templates:
+        return None
+    return (
+        f"{spec.module} uses local renderer but no deterministic template '{template}' exists. "
+        f"Known templates: {', '.join(templates)}. "
+        "Fix: add a matching template, set `template:` to a known template, or set "
+        "`rendererProvider: model` and record with `MINT_LIVE=1 mint live-smoke "
+        f"{spec.module}`."
+    )
+
+
+def model_replay_issue(spec: Spec, config: MintConfig, root: Path) -> str | None:
+    provider = selected_renderer_provider(spec, config)
+    if provider not in {"model", "anthropic"} or os.environ.get("MINT_LIVE") == "1":
+        return None
+    if matching_replay_cassette_count(spec, config, root) > 0:
+        return None
+    model = spec.renderer_model or config.renderer.model
+    prompt_version = spec.renderer_prompt_version or config.renderer.prompt_version
+    return (
+        f"Replay cassettes missing for model renderer spec {spec.module} "
+        f"(model {model}, prompt {prompt_version}). "
+        f"Fix: record with MINT_LIVE=1 mint live-smoke {spec.module}."
+    )
+
+
+def matching_replay_cassette_count(spec: Spec, config: MintConfig, root: Path) -> int:
+    provider = selected_renderer_provider(spec, config)
+    if provider not in {"model", "anthropic"}:
+        return 0
+    cassette_dir = root / "resources" / "cassettes" / "v1"
+    if not cassette_dir.exists():
+        return 0
+    model = spec.renderer_model or config.renderer.model
+    prompt_version = spec.renderer_prompt_version or config.renderer.prompt_version
+    count = 0
+    for path in sorted(cassette_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        request = data.get("request") if isinstance(data, dict) else None
+        if not isinstance(request, dict):
+            continue
+        if (
+            request.get("module") == spec.module
+            and data.get("model") == model
+            and data.get("promptVersion") == prompt_version
+        ):
+            count += 1
+    return count
 
 
 def status_module(module: str) -> str:
@@ -689,14 +1267,49 @@ _EDGE_HINT_TERMS = {
 }
 
 
-def _starter_spec(module: str, requires: list[str]) -> str:
+def _starter_spec(
+    module: str,
+    requires: list[str],
+    *,
+    stack: str = "python-lib",
+    renderer: str | None = None,
+    model: str | None = None,
+    prompt_version: str | None = None,
+) -> str:
     deps = _yaml_list(requires)
+    renderer_lines: list[str] = []
+    if renderer == "model":
+        renderer_lines.append("rendererProvider: model")
+        if model:
+            renderer_lines.append(f"rendererModel: {model}")
+        if prompt_version:
+            renderer_lines.append(f"rendererPromptVersion: {prompt_version}")
+    elif renderer == "local":
+        renderer_lines.append("rendererProvider: local")
+    renderer_block = ("\n" + "\n".join(renderer_lines)) if renderer_lines else ""
+    package = module.replace("-", "_")
+    if stack.startswith("typescript-"):
+        implementation = f"""- Use TypeScript with Node and npm-compatible package scripts.
+- Expose the public API from `src/index.ts`.
+- Keep generated implementation under `src/` and unit tests under `tests/`.
+- `package.json` scripts must include `typecheck`, `test:unit`, and `test:conformance`.
+- Use `tsc --noEmit` for type checking and Vitest for tests."""
+        test = """- Unit tests use Vitest.
+- Conformance tests use Vitest and call only the public API.
+- Include at least one edge or error case before rendering real code."""
+    else:
+        implementation = f"""- Use Python 3.12.
+- Expose the public API under `src/{package}/`.
+- Unit tests use pytest."""
+        test = """- Conformance tests use pytest.
+- Conformance tests call only the public API.
+- Include at least one edge or error case before rendering real code."""
     return f"""---
 module: {module}
 description: {module} module
 imports: {deps}
 requires: {deps}
-stack: python-lib
+stack: {stack}{renderer_block}
 ---
 
 ## definitions
@@ -705,15 +1318,11 @@ stack: python-lib
 
 ## implementation
 
-- Use Python 3.12.
-- Expose the public API under `src/{module.replace("-", "_")}/`.
-- Unit tests use pytest.
+{implementation}
 
 ## test
 
-- Conformance tests use pytest.
-- Conformance tests call only the public API.
-- Include at least one edge or error case before rendering real code.
+{test}
 
 ## functional
 
@@ -724,6 +1333,22 @@ stack: python-lib
   acceptance:
     - After calling the public API with a representative input, it returns the expected output.
 """
+
+
+def _new_module_hints(module: str, renderer: str | None) -> list[str]:
+    hints = [f"Next: mint lint {module}"]
+    if renderer == "model":
+        hints.extend(
+            [
+                f"Offline render will replay cassettes if they exist: mint render {module}",
+                f"First live render/record: MINT_LIVE=1 mint live-smoke {module}",
+            ]
+        )
+    elif renderer == "local":
+        hints.append("Add a matching deterministic template before rendering, or switch the spec to rendererProvider: model.")
+    else:
+        hints.append("Before rendering, add a deterministic template or set rendererProvider: model for live/replay rendering.")
+    return hints
 
 
 def _yaml_list(items: list[str]) -> str:
@@ -742,6 +1367,10 @@ def _has_testable_assertion(text: str) -> bool:
     if any(symbol in text for symbol in ["==", "!=", "<=", ">=", " exit ", "$?"]):
         return True
     return any(re.search(rf"\b{re.escape(term)}\b", lower) for term in _TESTABLE_TERMS)
+
+
+def _prefix_lines(text: str, prefix: str) -> list[str]:
+    return [prefix + line for line in text.rstrip().splitlines()]
 
 
 def metadata_path_for_message(context: ModuleContext) -> str:
@@ -831,7 +1460,7 @@ def render_module(
     additionally honours --from / --range / --force.
     """
     top = load_context(module, root)
-    order = build_render_order(module, _spec_loader(top.root))
+    order = build_render_order(module, _spec_loader(top.root, top.config.specs_dir))
     budget = BudgetTracker(
         max_attempts=top.config.limits.max_render_attempts,
         max_tokens_estimate=top.config.limits.max_render_tokens_estimate,
@@ -866,16 +1495,21 @@ def render_single_module(
     budget: BudgetTracker | None = None,
 ) -> tuple[int, str]:
     context = load_context(module, root)
+    adapter = context.stack_adapter
     if budget is None:
         budget = BudgetTracker(
             max_attempts=context.config.limits.max_render_attempts,
             max_tokens_estimate=context.config.limits.max_render_tokens_estimate,
         )
-    health_status, health_output = healthcheck_module(module, root=context.root)
+    health_status, health_output = healthcheck_module(
+        module,
+        root=context.root,
+        allow_missing_replay=model_client is not None,
+    )
     if health_status != 0:
         return health_status, health_output
 
-    prepare = run_script(context, context.config.scripts.prepare)
+    prepare = adapter.prepare(context)
     if prepare.returncode != 0:
         return 1, format_script_failure("prepare", prepare)
 
@@ -916,7 +1550,6 @@ def render_single_module(
         max_response_chars=context.config.limits.max_model_response_chars,
     )
     required_payload = _required_modules_payload(context, hashes.required_order)
-    required_src = [context.src_dir_for(m) for m in hashes.required_order]
     imported_payload = [spec.imported_context_ir() for spec in resolve_imported_specs(context)]
 
     output = [
@@ -938,8 +1571,8 @@ def render_single_module(
                 renderer,
                 hashes,
                 required_payload,
-                required_src,
                 imported_payload,
+                adapter,
                 budget,
             )
         except MintError as exc:
@@ -1105,8 +1738,8 @@ def render_one_unit(
     renderer: Renderer,
     hashes: ContextHashes,
     required_payload: list[dict[str, Any]],
-    required_src: list[Path],
     imported_payload: list[dict[str, Any]],
+    adapter: StackAdapter,
     budget: BudgetTracker,
 ) -> None:
     unit = context.spec.functional_units[index]
@@ -1133,6 +1766,8 @@ def render_one_unit(
             phase=phase,
             attempt=attempt,
             feedback=feedback,
+            prompt_hints=adapter.prompt_hints(context, hashes.required_order),
+            code_fence_language=adapter.code_fence_language,
         )
 
     # ----- implementation + unit-test phase (one retry on failure) -----
@@ -1155,14 +1790,14 @@ def render_one_unit(
             continue
         apply_patch(patch, context.generated_dir, context.conformance_dir)
 
-        result = run_script(context, context.config.scripts.unit, required_src=required_src)
-        classification = classify_test_result("unit", result.returncode)
+        result = adapter.run_unit_tests(context, required_order=hashes.required_order)
+        classification = adapter.classify_test_result("unit", result)
         write_attempt(
             context.generated_dir,
             unit.id,
             "unit",
             attempt,
-            script=context.config.scripts.unit,
+            script=adapter.unit_command_label,
             exit_code=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
@@ -1223,20 +1858,20 @@ def render_one_unit(
                 continue
             apply_patch(patch, context.generated_dir, context.conformance_dir)
             # Guard: a conformance-driven change must not break the unit tests.
-            recheck = run_script(context, context.config.scripts.unit, required_src=required_src)
-            if classify_test_result("unit", recheck.returncode) != "passed":
+            recheck = adapter.run_unit_tests(context, required_order=hashes.required_order)
+            if adapter.classify_test_result("unit", recheck) != "passed":
                 raise MintError(
                     format_phase_failure("unit-regression", unit, "unit_failed", recheck)
                 )
 
-        result = run_script(context, context.config.scripts.conformance, required_src=required_src)
-        classification = classify_test_result("conformance", result.returncode)
+        result = adapter.run_conformance_tests(context, required_order=hashes.required_order)
+        classification = adapter.classify_test_result("conformance", result)
         write_attempt(
             context.generated_dir,
             unit.id,
             "conformance",
             attempt,
-            script=context.config.scripts.conformance,
+            script=adapter.conformance_command_label,
             exit_code=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
@@ -1267,10 +1902,13 @@ def render_one_unit(
         feedback = combined_output(result)
         attempt += 1
 
-    remove_runtime_caches(context.generated_dir)
-    remove_runtime_caches(context.conformance_dir)
+    adapter.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
 
-    test_quality = evaluate_test_quality(context, unit, required_src=required_src)
+    test_quality = evaluate_test_quality(
+        context,
+        unit,
+        required_src=adapter.required_runtime_paths(context, hashes.required_order),
+    )
     test_quality_output = format_test_quality_verdict(test_quality)
     test_quality_classification = (
         "passed" if test_quality.get("status") in {"passed", "skipped"} else "test_quality_failed"
@@ -1505,16 +2143,18 @@ def _required_modules_payload(
 ) -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     for module in required_order:
-        src_dir = context.src_dir_for(module)
+        spec = parse_spec_file(context.spec_path(module))
+        adapter = adapter_for_stack(spec.stack)
+        module_dir = context.generated_dir_for(module)
         files: list[dict[str, str]] = []
-        if src_dir.exists():
-            for path in sorted(src_dir.rglob("*.py")):
-                files.append(
-                    {
-                        "path": path.relative_to(context.generated_dir_for(module)).as_posix(),
-                        "contents": path.read_text(encoding="utf-8"),
-                    }
-                )
+        for path in adapter.required_payload_files(module_dir):
+            files.append(
+                {
+                    "path": path.relative_to(module_dir).as_posix(),
+                    "contents": path.read_text(encoding="utf-8"),
+                    "language": adapter.code_fence_language,
+                }
+            )
         payload.append({"module": module, "files": files})
     return payload
 
@@ -1522,7 +2162,7 @@ def _required_modules_payload(
 def classify_test_result(phase: str, returncode: int) -> str:
     if returncode == 0:
         return "passed"
-    if returncode == PYTEST_NO_TESTS:
+    if returncode == 5:
         return "no_tests"
     return f"{phase}_failed"
 
@@ -1543,8 +2183,16 @@ def remove_runtime_caches(path: Path) -> None:
         shutil.rmtree(cache_dir, ignore_errors=True)
     for cache_dir in path.rglob(".pytest_cache"):
         shutil.rmtree(cache_dir, ignore_errors=True)
+    for cache_dir in path.rglob(".vite"):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    for cache_dir in path.rglob(".vitest"):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    for cache_dir in path.rglob("coverage"):
+        shutil.rmtree(cache_dir, ignore_errors=True)
     for pyc in path.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
+    for tsbuildinfo in path.rglob("*.tsbuildinfo"):
+        tsbuildinfo.unlink(missing_ok=True)
 
 
 def run_script(
@@ -1554,6 +2202,13 @@ def run_script(
     required_src: list[Path] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     path = context.root / script
+    if not path.exists():
+        raise MintError(
+            f"Configured script not found: {script}. "
+            f"Fix: run mint doctor; {_missing_file_fix()}."
+        )
+    if not os.access(path, os.X_OK):
+        raise MintError(f"Configured script is not executable: {script}. Fix: chmod +x {script}.")
     env = os.environ.copy()
     env["MINT_GENERATED_DIR"] = str(context.generated_dir)
     env["MINT_CONFORMANCE_DIR"] = str(context.conformance_dir)
@@ -1566,6 +2221,7 @@ def run_script(
     # keeps caches out of checkpoints for free.
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.setdefault("PYTHONPYCACHEPREFIX", "/private/tmp/mint-pycache")
+    env.setdefault("PYTHON_BIN", sys.executable)
     return subprocess.run(
         [str(path), context.module],
         cwd=context.root,

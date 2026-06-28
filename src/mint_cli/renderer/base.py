@@ -38,6 +38,8 @@ class RenderRequest:
     phase: str = "unit"
     attempt: int = 1
     feedback: str | None = None
+    prompt_hints: list[str] = field(default_factory=list)
+    code_fence_language: str = "python"
 
     @property
     def current_unit_id(self) -> str:

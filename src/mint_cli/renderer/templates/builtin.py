@@ -403,9 +403,9 @@ def build_example(request: RenderRequest) -> list[dict]:
         _m("tests/conftest.py", _CONFTEST),
     ]
     if "FR1" in rendered:
-        files.append(_m("tests/test_fr1.py", _store_unit_fr1(package)))
+        files.append(_m("tests/test_fr1.py", _example_unit_fr1(package, env_var)))
     if "FR2" in rendered:
-        files.append(_m("tests/test_fr2.py", _store_unit_fr2(package)))
+        files.append(_m("tests/test_fr2.py", _example_unit_fr2(package, env_var)))
 
     unit = request.current_unit_id
     runner = f'''from __future__ import annotations
@@ -453,6 +453,86 @@ def test_list_preserves_insertion_order(tmp_path):
         body = _generic_conformance(package)
     files.append(_c(f"{unit}/test_{unit.lower()}.py", body))
     return files
+
+
+def _example_unit_fr1(package: str, env_var: str) -> str:
+    return f'''from __future__ import annotations
+
+from {package} import TaskStore
+from {package} import cli
+
+
+def test_add_creates_incomplete_task(tmp_path):
+    store = TaskStore(tmp_path / "tasks.json")
+
+    task = store.add_task("Buy milk")
+
+    assert task.text == "Buy milk"
+    assert task.completed is False
+    assert store.list_tasks()[0].text == "Buy milk"
+    assert store.list_tasks()[0].completed is False
+
+
+def test_cli_add_then_list_shows_incomplete_task(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("{env_var}", str(tmp_path / "tasks.json"))
+
+    add_rc = cli.main(["add", "Buy milk"])
+    add_out = capsys.readouterr().out
+    list_rc = cli.main(["list"])
+    list_out = capsys.readouterr().out
+
+    assert add_rc == 0
+    assert "[ ] Buy milk" in add_out
+    assert list_rc == 0
+    assert "[ ] Buy milk" in list_out
+
+
+def test_cli_without_command_prints_help(capsys):
+    rc = cli.main([])
+
+    assert rc == 0
+    assert "usage:" in capsys.readouterr().out
+'''
+
+
+def _example_unit_fr2(package: str, env_var: str) -> str:
+    return f'''from __future__ import annotations
+
+from {package} import TaskStore
+from {package} import cli
+
+
+def test_list_preserves_insertion_order(tmp_path):
+    store = TaskStore(tmp_path / "tasks.json")
+
+    store.add_task("Buy milk")
+    store.add_task("Write notes")
+
+    assert [task.text for task in store.list_tasks()] == ["Buy milk", "Write notes"]
+
+
+def test_cli_list_preserves_insertion_order(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("{env_var}", str(tmp_path / "tasks.json"))
+    assert cli.main(["add", "Buy milk"]) == 0
+    assert cli.main(["add", "Write notes"]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(["list"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out.index("Buy milk") < out.index("Write notes")
+
+
+def test_cli_list_with_no_tasks_prints_no_rows(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("{env_var}", str(tmp_path / "tasks.json"))
+
+    rc = cli.main(["list"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out == ""
+'''
 
 
 def _example_cli(package: str, env_var: str) -> str:

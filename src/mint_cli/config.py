@@ -44,6 +44,7 @@ class MintConfig:
     path: Path
     version: int
     default_stack: str
+    specs_dir: str
     generated_dir: str
     conformance_dir: str
     scripts: ScriptConfig
@@ -62,16 +63,26 @@ def load_config(path: Path) -> MintConfig:
 
     raw = parse_simple_yaml(path.read_text(encoding="utf-8"))
     try:
-        scripts = raw["scripts"]
-        renderer = raw["renderer"]
-        limits = raw["limits"]
-        test_quality_raw = raw.get("testQuality", {})
+        scripts = _mapping(raw["scripts"], "scripts", path)
+        renderer = _mapping(raw["renderer"], "renderer", path)
+        limits = _mapping(raw["limits"], "limits", path)
+        test_quality_raw = _mapping(raw.get("testQuality", {}), "testQuality", path)
+        specs_dir = validate_project_dir(raw.get("specsDir", ".mint/specs"), "specsDir", path)
+        generated_dir = validate_project_output_dir(raw["generatedDir"], "generatedDir", path)
+        conformance_dir = validate_project_output_dir(raw["conformanceDir"], "conformanceDir", path)
+        if len({specs_dir, generated_dir, conformance_dir}) != 3:
+            raise MintError(
+                f"Invalid project directories in {path}: specsDir, generatedDir, "
+                "and conformanceDir must differ."
+            )
+
         return MintConfig(
             path=path,
-            version=int(raw["version"]),
+            version=_int(raw["version"], "version", path),
             default_stack=str(raw["defaultStack"]),
-            generated_dir=str(raw["generatedDir"]),
-            conformance_dir=str(raw["conformanceDir"]),
+            specs_dir=specs_dir,
+            generated_dir=generated_dir,
+            conformance_dir=conformance_dir,
             scripts=ScriptConfig(
                 unit=str(scripts["unit"]),
                 conformance=str(scripts["conformance"]),
@@ -83,22 +94,90 @@ def load_config(path: Path) -> MintConfig:
                 prompt_version=str(renderer["promptVersion"]),
             ),
             limits=LimitConfig(
-                unit_retries=int(limits["unitRetries"]),
-                conformance_retries=int(limits["conformanceRetries"]),
-                max_functional_units_per_render=int(limits["maxFunctionalUnitsPerRender"]),
-                max_model_response_chars=int(limits.get("maxModelResponseChars", 200000)),
-                max_render_attempts=int(limits.get("maxRenderAttempts", 0)),
-                max_render_tokens_estimate=int(limits.get("maxRenderTokensEstimate", 0)),
+                unit_retries=_int(limits["unitRetries"], "limits.unitRetries", path),
+                conformance_retries=_int(
+                    limits["conformanceRetries"], "limits.conformanceRetries", path
+                ),
+                max_functional_units_per_render=_int(
+                    limits["maxFunctionalUnitsPerRender"],
+                    "limits.maxFunctionalUnitsPerRender",
+                    path,
+                ),
+                max_model_response_chars=_int(
+                    limits.get("maxModelResponseChars", 200000),
+                    "limits.maxModelResponseChars",
+                    path,
+                ),
+                max_render_attempts=_int(
+                    limits.get("maxRenderAttempts", 0), "limits.maxRenderAttempts", path
+                ),
+                max_render_tokens_estimate=_int(
+                    limits.get("maxRenderTokensEstimate", 0),
+                    "limits.maxRenderTokensEstimate",
+                    path,
+                ),
             ),
             test_quality=TestQualityConfig(
-                enabled=bool(test_quality_raw.get("enabled", True)),
-                min_coverage_percent=int(test_quality_raw.get("minCoveragePercent", 60)),
-                mutation_probe=bool(test_quality_raw.get("mutationProbe", True)),
-                mutation_max_candidates=int(test_quality_raw.get("mutationMaxCandidates", 3)),
+                enabled=_bool(test_quality_raw.get("enabled", True), "testQuality.enabled", path),
+                min_coverage_percent=_int(
+                    test_quality_raw.get("minCoveragePercent", 60),
+                    "testQuality.minCoveragePercent",
+                    path,
+                ),
+                mutation_probe=_bool(
+                    test_quality_raw.get("mutationProbe", True),
+                    "testQuality.mutationProbe",
+                    path,
+                ),
+                mutation_max_candidates=_int(
+                    test_quality_raw.get("mutationMaxCandidates", 3),
+                    "testQuality.mutationMaxCandidates",
+                    path,
+                ),
             ),
         )
     except KeyError as exc:
         raise MintError(f"Missing required config key in {path}: {exc.args[0]}") from exc
+
+
+def _mapping(value: Any, field_name: str, config_path: Path) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise MintError(f"Invalid {field_name} in {config_path}: expected a mapping.")
+    return value
+
+
+def _int(value: Any, field_name: str, config_path: Path) -> int:
+    if isinstance(value, bool):
+        raise MintError(f"Invalid {field_name} in {config_path}: expected an integer.")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise MintError(f"Invalid {field_name} in {config_path}: expected an integer.") from exc
+
+
+def _bool(value: Any, field_name: str, config_path: Path) -> bool:
+    if not isinstance(value, bool):
+        raise MintError(f"Invalid {field_name} in {config_path}: expected true or false.")
+    return value
+
+
+def validate_project_dir(value: Any, field_name: str, config_path: Path) -> str:
+    text = str(value).strip()
+    candidate = Path(text)
+    if not text or candidate == Path(".") or candidate.is_absolute() or ".." in candidate.parts:
+        raise MintError(
+            f"Invalid {field_name} in {config_path}: use a project-relative directory "
+            "without '.', '..', or an absolute path."
+        )
+    if ".git" in candidate.parts:
+        raise MintError(
+            f"Invalid {field_name} in {config_path}: project directories cannot be inside .git."
+        )
+    return candidate.as_posix()
+
+
+def validate_project_output_dir(value: Any, field_name: str, config_path: Path) -> str:
+    return validate_project_dir(value, field_name, config_path)
 
 
 def parse_simple_yaml(text: str) -> dict[str, Any]:

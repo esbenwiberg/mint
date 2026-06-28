@@ -13,8 +13,9 @@ fi
 cd "$GENERATED_DIR"
 export PYTHONPATH="$PWD/src:${MINT_REQUIRED_SRC:-}:${PYTHONPATH:-}"
 
-if "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
-  "$PYTHON_BIN" -m pytest
-else
-  pytest
+if ! "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
+  echo "pytest is required for $PYTHON_BIN. Install with: $PYTHON_BIN -m pip install -e '.[dev]'" >&2
+  exit 1
 fi
+
+"$PYTHON_BIN" -m pytest

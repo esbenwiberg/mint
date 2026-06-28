@@ -11,6 +11,7 @@ from .hashing import hash_json
 
 
 UNIT_ID_RE = re.compile(r"^FR[0-9]+$")
+MODULE_REF_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,8 @@ def parse_spec_file(path: Path) -> Spec:
         raise MintError(f"Spec {path} cannot import itself ('{module}')")
     if module in requires:
         raise MintError(f"Spec {path} cannot require itself ('{module}')")
+    validate_module_refs(path, imports, "imports")
+    validate_module_refs(path, requires, "requires")
 
     if path.stem.removesuffix(".mint") != module:
         # The example spec is intentionally named example.mint.md. This check keeps
@@ -265,6 +268,15 @@ def ensure_string_list(value: Any, field_name: str) -> list[str]:
     if not isinstance(value, list):
         raise MintError(f"Expected {field_name} to be a list")
     return [str(item) for item in value]
+
+
+def validate_module_refs(path: Path, values: list[str], field_name: str) -> None:
+    for value in values:
+        if not MODULE_REF_RE.match(value):
+            raise MintError(
+                f"Invalid {field_name} module reference '{value}' in {path}: "
+                "use a lowercase module slug like taskstore or calc-cli."
+            )
 
 
 def validate_spec_parts(

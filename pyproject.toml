@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "mint-regenerative"
 version = "1.0.0"
 description = "Local Codeplain-inspired regenerative coding experiment"
 requires-python = ">=3.12"
-readme = "docs/regenerative-system/README.md"
+readme = "README.md"
 license = "MIT"
 authors = [
   { name = "Mint contributors" }
@@ -15,7 +15,7 @@ authors = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest==9.0.3"]
+dev = ["pytest==9.0.3", "pytest-cov==7.1.0"]
 live = ["anthropic>=0.40,<1"]
 
 [project.scripts]
@@ -27,3 +27,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["generated", "conformance", ".git", ".mintgen"]
+markers = [
+  "e2e: end-to-end tests that drive the CLI in subprocesses",
+]

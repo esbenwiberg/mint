@@ -15,6 +15,7 @@ from typing import Any, Callable, Protocol
 from ..errors import MintError
 from .cassettes import cassette_id
 from .base import RenderOutcome, RenderRequest
+from .patch import validate_patch
 
 SYSTEM_PROMPT = (
     "You are a code renderer in a regenerative coding system. You implement exactly "
@@ -58,10 +59,12 @@ class ModelRenderer:
         prompt_version: str = "v1",
         *,
         max_response_chars: int = 200000,
+        model: str | None = None,
     ) -> None:
         self._client = client
         self.prompt_version = prompt_version
         self.max_response_chars = max_response_chars
+        self.model = model
 
     def render(self, request: RenderRequest) -> RenderOutcome:
         prompt = build_prompt(request, self.prompt_version)
@@ -72,6 +75,7 @@ class ModelRenderer:
             prompt_version=self.prompt_version,
             request=request,
             prompt=prompt,
+            model=self.model,
         )
         if len(response) > self.max_response_chars:
             raise ModelOutputError(
@@ -96,8 +100,20 @@ class ModelRenderer:
                 cassette_id=c_id,
                 renderer=self.name,
             ) from exc
+        try:
+            patch = validate_patch(raw)
+        except MintError as exc:
+            raise ModelOutputError(
+                f"Model renderer returned an invalid patch for "
+                f"{request.current_unit_id} ({request.phase}): {exc}"
+                "\nReturn only the JSON patch object matching the schema.",
+                prompt=prompt,
+                response=response,
+                cassette_id=c_id,
+                renderer=self.name,
+            ) from exc
         return RenderOutcome(
-            patch=raw,
+            patch=patch,
             renderer=self.name,
             prompt=prompt,
             response=response,
@@ -120,6 +136,10 @@ def build_prompt(request: RenderRequest, prompt_version: str) -> str:
     lines += ["", "## Test requirements"]
     lines += [f"- {item}" for item in request.test] or ["- (none)"]
 
+    if request.prompt_hints:
+        lines += ["", "## Stack adapter guidance"]
+        lines += [f"- {item}" for item in request.prompt_hints]
+
     if request.imported_context:
         lines += ["", "## Imported context"]
         for ctx in request.imported_context:
@@ -133,7 +153,8 @@ def build_prompt(request: RenderRequest, prompt_version: str) -> str:
             lines.append(f"### {req.get('module')}")
             for f in req.get("files", []):
                 lines.append(f"#### {f['path']}")
-                lines.append("```python")
+                language = str(f.get("language") or request.code_fence_language or "text")
+                lines.append(f"```{language}")
                 lines.append(str(f.get("contents", "")))
                 lines.append("```")
 

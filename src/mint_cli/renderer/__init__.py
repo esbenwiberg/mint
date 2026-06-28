@@ -79,6 +79,7 @@ def get_renderer(
             client=client,
             prompt_version=prompt_version,
             max_response_chars=max_response_chars,
+            model=model,
         )
     raise MintError(
         f"Unknown renderer provider '{provider}'. Use one of: "

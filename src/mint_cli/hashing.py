@@ -41,9 +41,17 @@ def should_skip(relative_path: Path) -> bool:
     parts = relative_path.parts
     if not parts:
         return False
-    if parts[0] in {".git", ".mintgen", "__pycache__", ".pytest_cache"}:
+    if parts[0] in {
+        ".git",
+        ".mintgen",
+        "__pycache__",
+        ".pytest_cache",
+        "node_modules",
+        ".vite",
+        ".vitest",
+        "coverage",
+    }:
         return True
-    if any(part == "__pycache__" for part in parts):
+    if any(part in {"__pycache__", "node_modules", ".vite", ".vitest"} for part in parts):
         return True
-    return relative_path.suffix in {".pyc", ".pyo"}
-
+    return relative_path.suffix in {".pyc", ".pyo", ".tsbuildinfo"}

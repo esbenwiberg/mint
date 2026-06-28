@@ -19,22 +19,29 @@ class ModelClient(Protocol):
 CASSETTE_VERSION = 1
 
 
-def cassette_id(*, prompt_version: str, request: RenderRequest, prompt: str) -> str:
+def cassette_id(
+    *,
+    prompt_version: str,
+    request: RenderRequest,
+    prompt: str,
+    model: str | None = None,
+) -> str:
     """Stable request key for cassette filenames.
 
     The prompt text is part of the hash, so prompt edits miss the old cassette
     instead of silently replaying a stale response.
     """
-    return hash_json(
-        {
-            "promptVersion": prompt_version,
-            "module": request.module,
-            "unit": request.current_unit_id,
-            "phase": request.phase,
-            "attempt": request.attempt,
-            "prompt": prompt,
-        }
-    )
+    payload = {
+        "promptVersion": prompt_version,
+        "module": request.module,
+        "unit": request.current_unit_id,
+        "phase": request.phase,
+        "attempt": request.attempt,
+        "prompt": prompt,
+    }
+    if model is not None:
+        payload["model"] = model
+    return hash_json(payload)
 
 
 def cassette_path(cassette_dir: Path, cassette_hash: str) -> Path:
@@ -63,6 +70,7 @@ class RecordingClient:
             prompt_version=self._prompt_version,
             request=request,
             prompt=prompt,
+            model=self._model,
         )
         path = cassette_path(self._cassette_dir, cassette_hash)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,8 +113,20 @@ class ReplayClient:
             prompt_version=self._prompt_version,
             request=request,
             prompt=prompt,
+            model=self._model,
         )
         path = cassette_path(self._cassette_dir, cassette_hash)
+        validation_hash = cassette_hash
+        if not path.exists():
+            legacy_hash = cassette_id(
+                prompt_version=self._prompt_version,
+                request=request,
+                prompt=prompt,
+            )
+            legacy_path = cassette_path(self._cassette_dir, legacy_hash)
+            if legacy_path.exists():
+                path = legacy_path
+                validation_hash = legacy_hash
         if not path.exists():
             related = self._find_related(request)
             if related is not None:
@@ -118,7 +138,14 @@ class ReplayClient:
             )
 
         data = _load_cassette(path)
-        self._validate(data, path=path, cassette_hash=cassette_hash, system=system, prompt=prompt, request=request)
+        self._validate(
+            data,
+            path=path,
+            cassette_hash=validation_hash,
+            system=system,
+            prompt=prompt,
+            request=request,
+        )
         response = data.get("response")
         if not isinstance(response, str):
             raise MintError(f"Cassette {path} is missing a string response. Re-record it.")

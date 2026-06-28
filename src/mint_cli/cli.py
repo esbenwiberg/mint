@@ -10,15 +10,18 @@ from .workflow import (
     clean_module,
     doctor_project,
     healthcheck_module,
+    init_project,
     inspect_unit,
     live_smoke_module,
     lint_module,
     new_module,
+    next_module,
     parse_module,
     report_module,
     render_module,
     status_module,
 )
+from .stacks import known_stacks
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,7 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser(
         "init",
-        help="show the Phase 0 skeleton that should exist in this repo",
+        help="show or create the Phase 0 project skeleton",
+    )
+    init_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="create missing mint.yaml, directories, and test scripts",
     )
     init_parser.set_defaults(handler=handle_init)
 
@@ -59,6 +67,28 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODULE",
         help="required module specs to depend on",
     )
+    new_parser.add_argument(
+        "--stack",
+        choices=known_stacks(),
+        default=None,
+        help="target stack for the starter spec; defaults to python-lib",
+    )
+    new_parser.add_argument(
+        "--renderer",
+        choices=["local", "model"],
+        default=None,
+        help="optional per-spec renderer override; use model for fresh template-free specs",
+    )
+    new_parser.add_argument(
+        "--model",
+        default=None,
+        help="required model id when using --renderer model",
+    )
+    new_parser.add_argument(
+        "--prompt-version",
+        default=None,
+        help="required prompt version when using --renderer model",
+    )
     new_parser.set_defaults(handler=handle_new)
 
     lint_parser = subparsers.add_parser(
@@ -67,6 +97,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lint_parser.add_argument("module", help="module name, for example: example")
     lint_parser.set_defaults(handler=handle_lint)
+
+    next_parser = subparsers.add_parser(
+        "next",
+        help="show the next recommended action for a project or module",
+    )
+    next_parser.add_argument(
+        "module",
+        nargs="?",
+        help="optional module name, for example: example",
+    )
+    next_parser.set_defaults(handler=handle_next)
 
     doctor_parser = subparsers.add_parser(
         "doctor",
@@ -131,15 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def handle_init(_args: argparse.Namespace) -> int:
-    print("mint Phase 0 skeleton")
-    print("- config: mint.yaml")
-    print("- specs: specs/example.mint.md")
-    print("- resources: resources/")
-    print("- generated output: generated/")
-    print("- conformance tests: conformance/")
-    print("- scripts: test_scripts/")
-    return 0
+def handle_init(args: argparse.Namespace) -> int:
+    status, output = init_project(write=args.write)
+    print(output, end="")
+    return status
 
 
 def handle_parse(args: argparse.Namespace) -> int:
@@ -148,13 +184,26 @@ def handle_parse(args: argparse.Namespace) -> int:
 
 
 def handle_new(args: argparse.Namespace) -> int:
-    status, output = new_module(args.module, requires=args.requires)
+    status, output = new_module(
+        args.module,
+        requires=args.requires,
+        stack=args.stack,
+        renderer=args.renderer,
+        model=args.model,
+        prompt_version=args.prompt_version,
+    )
     print(output, end="")
     return status
 
 
 def handle_lint(args: argparse.Namespace) -> int:
     status, output = lint_module(args.module)
+    print(output, end="")
+    return status
+
+
+def handle_next(args: argparse.Namespace) -> int:
+    status, output = next_module(args.module)
     print(output, end="")
     return status
 
