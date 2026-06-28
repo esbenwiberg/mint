@@ -19,7 +19,11 @@ from .modgraph import build_render_order
 from .renderer import (
     RenderRequest,
     apply_patch,
+    cassette_model,
     get_renderer,
+    is_anthropic_live_provider,
+    is_model_provider,
+    valid_renderer_providers,
     validate_patch,
 )
 from .renderer.base import Renderer
@@ -332,7 +336,7 @@ def compute_context_hashes(context: ModuleContext) -> ContextHashes:
 
 
 def renderer_provider(context: ModuleContext) -> str:
-    return context.spec.renderer_provider or context.config.renderer.provider
+    return selected_renderer_provider(context.spec, context.config)
 
 
 def renderer_model(context: ModuleContext) -> str:
@@ -460,6 +464,8 @@ def _is_placeholder_model(value: str | None) -> bool:
         "modelid",
         "your-model-id",
         "your-anthropic-model-id",
+        "your-claude-model-id",
+        "your-codex-model-id",
     }
 
 
@@ -491,33 +497,39 @@ def new_module(
             f"- Unsupported stack: {selected_stack}\n"
             f"- Use one of: {', '.join(known_stacks())}.\n",
         )
-    if renderer is not None and renderer not in {"local", "model"}:
+    selected_renderer = renderer.strip().lower() if renderer is not None else None
+    if selected_renderer is not None and selected_renderer not in valid_renderer_providers():
         return (
             1,
             "FAIL new\n"
             f"- Invalid renderer: {renderer}\n"
-            "- Use one of: local, model.\n",
+            f"- Use one of: {', '.join(valid_renderer_providers())}.\n",
         )
-    if renderer == "model" and (not _has_value(model) or not _has_value(prompt_version)):
+    if selected_renderer is not None:
+        renderer = selected_renderer
+    if renderer is not None and is_model_provider(renderer) and (
+        not _has_value(model) or not _has_value(prompt_version)
+    ):
         return (
             1,
             "FAIL new\n"
-            "- --renderer model requires both --model and --prompt-version.\n"
-            f"- Choose a real Anthropic model id, then run: mint new {module} "
-            f"--renderer model --model MODEL_ID --prompt-version {module}-v1\n",
+            f"- --renderer {renderer} requires both --model and --prompt-version.\n"
+            f"- Choose a real model id, then run: mint new {module} "
+            f"--renderer {renderer} --model MODEL_ID --prompt-version {module}-v1\n",
         )
-    if renderer == "model" and _is_placeholder_model(model):
+    if renderer is not None and is_model_provider(renderer) and _is_placeholder_model(model):
         return (
             1,
             "FAIL new\n"
-            f"- --model must be a real Anthropic model id, not {model!r}.\n"
+            f"- --model must be a real model id, not {model!r}.\n"
             "- Replace MODEL_ID with the model you want to use before running the command.\n",
         )
-    if renderer != "model" and (model or prompt_version):
+    if (renderer is None or not is_model_provider(renderer)) and (model or prompt_version):
         return (
             1,
             "FAIL new\n"
-            "- --model and --prompt-version require --renderer model.\n",
+            "- --model and --prompt-version require a model renderer "
+            "(model, anthropic, claude-cli, or codex-cli).\n",
         )
 
     deps = requires or []
@@ -828,7 +840,7 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
         if template_issue:
             warnings.append(template_issue)
         provider = selected_renderer_provider(spec, config)
-        if provider in {"model", "anthropic"}:
+        if is_model_provider(provider):
             model_specs.append(spec.module)
             replay_issue = model_replay_issue(spec, config, root)
             if replay_issue:
@@ -962,14 +974,15 @@ def local_template_issue(spec: Spec, config: MintConfig) -> str | None:
         f"{spec.module} uses local renderer but no deterministic template '{template}' exists. "
         f"Known templates: {', '.join(templates)}. "
         "Fix: add a matching template, set `template:` to a known template, or set "
-        "`rendererProvider: model` and record with `MINT_LIVE=1 mint live-smoke "
+        "`rendererProvider: model` (or another model provider) and record with "
+        "`MINT_LIVE=1 mint live-smoke "
         f"{spec.module}`."
     )
 
 
 def model_replay_issue(spec: Spec, config: MintConfig, root: Path) -> str | None:
     provider = selected_renderer_provider(spec, config)
-    if provider not in {"model", "anthropic"} or os.environ.get("MINT_LIVE") == "1":
+    if not is_model_provider(provider) or os.environ.get("MINT_LIVE") == "1":
         return None
     if matching_replay_cassette_count(spec, config, root) > 0:
         return None
@@ -984,12 +997,12 @@ def model_replay_issue(spec: Spec, config: MintConfig, root: Path) -> str | None
 
 def matching_replay_cassette_count(spec: Spec, config: MintConfig, root: Path) -> int:
     provider = selected_renderer_provider(spec, config)
-    if provider not in {"model", "anthropic"}:
+    if not is_model_provider(provider):
         return 0
     cassette_dir = root / "resources" / "cassettes" / "v1"
     if not cassette_dir.exists():
         return 0
-    model = spec.renderer_model or config.renderer.model
+    model = cassette_model(provider, spec.renderer_model or config.renderer.model)
     prompt_version = spec.renderer_prompt_version or config.renderer.prompt_version
     count = 0
     for path in sorted(cassette_dir.glob("*.json")):
@@ -1071,12 +1084,13 @@ def report_module(module: str, *, root: Path | None = None) -> tuple[int, str]:
 def live_smoke_module(module: str, *, root: Path | None = None) -> tuple[int, str]:
     context = load_context(module, root)
     provider = renderer_provider(context)
-    if provider not in {"model", "anthropic"}:
+    if not is_model_provider(provider):
         return (
             1,
             f"FAIL live-smoke {module}\n"
             f"- {context.spec.path.relative_to(context.root).as_posix()} uses renderer "
-            f"{provider!r}; live smoke requires rendererProvider: model or anthropic.\n",
+            f"{provider!r}; live smoke requires a model renderer "
+            "(model, anthropic, claude-cli, or codex-cli).\n",
         )
     if os.environ.get("MINT_LIVE") != "1":
         return (
@@ -1085,7 +1099,7 @@ def live_smoke_module(module: str, *, root: Path | None = None) -> tuple[int, st
             "- MINT_LIVE=1 is required so live provider calls are always explicit.\n"
             f"- Next: MINT_LIVE=1 mint live-smoke {module}\n",
         )
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if is_anthropic_live_provider(provider) and not os.environ.get("ANTHROPIC_API_KEY"):
         return (
             1,
             f"FAIL live-smoke {module}\n"
@@ -1278,14 +1292,14 @@ def _starter_spec(
 ) -> str:
     deps = _yaml_list(requires)
     renderer_lines: list[str] = []
-    if renderer == "model":
-        renderer_lines.append("rendererProvider: model")
+    if renderer is not None and is_model_provider(renderer):
+        renderer_lines.append(f"rendererProvider: {renderer}")
         if model:
             renderer_lines.append(f"rendererModel: {model}")
         if prompt_version:
             renderer_lines.append(f"rendererPromptVersion: {prompt_version}")
-    elif renderer == "local":
-        renderer_lines.append("rendererProvider: local")
+    elif renderer in {"local", "deterministic"}:
+        renderer_lines.append(f"rendererProvider: {renderer}")
     renderer_block = ("\n" + "\n".join(renderer_lines)) if renderer_lines else ""
     package = module.replace("-", "_")
     if stack.startswith("typescript-"):
@@ -1337,17 +1351,23 @@ stack: {stack}{renderer_block}
 
 def _new_module_hints(module: str, renderer: str | None) -> list[str]:
     hints = [f"Next: mint lint {module}"]
-    if renderer == "model":
+    if renderer is not None and is_model_provider(renderer):
         hints.extend(
             [
                 f"Offline render will replay cassettes if they exist: mint render {module}",
                 f"First live render/record: MINT_LIVE=1 mint live-smoke {module}",
             ]
         )
-    elif renderer == "local":
-        hints.append("Add a matching deterministic template before rendering, or switch the spec to rendererProvider: model.")
+    elif renderer in {"local", "deterministic"}:
+        hints.append(
+            "Add a matching deterministic template before rendering, or switch the spec "
+            "to rendererProvider: model (or another model provider)."
+        )
     else:
-        hints.append("Before rendering, add a deterministic template or set rendererProvider: model for live/replay rendering.")
+        hints.append(
+            "Before rendering, add a deterministic template or set rendererProvider: model "
+            "(or another model provider) for live/replay rendering."
+        )
     return hints
 
 

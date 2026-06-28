@@ -1,7 +1,8 @@
 # Model record/replay
 
-The model renderer never calls the network by default. When `renderer.provider` is
-`model` or `anthropic`, `mint` uses a `ReplayClient` unless `MINT_LIVE=1` is set.
+The model renderer never calls a live provider by default. When
+`renderer.provider` is `model`, `anthropic`, `claude-cli`, or `codex-cli`, `mint`
+uses a `ReplayClient` unless `MINT_LIVE=1` is set.
 
 ## Cassette files
 
@@ -31,7 +32,8 @@ instead of replaying a stale model response.
 Each cassette stores:
 
 - cassette format version
-- pinned model id and prompt version
+- pinned model id and prompt version (`claude-cli` and `codex-cli` cassettes
+  scope the model as `provider:model`)
 - request metadata and prompt hash
 - full system prompt
 - full user prompt
@@ -64,10 +66,22 @@ Recording is explicit and environment-gated:
 MINT_LIVE=1 mint live-smoke calc-cli
 ```
 
-In this mode `RecordingClient` wraps `AnthropicModelClient`, writes each provider
+In this mode `RecordingClient` wraps the selected live client, writes each provider
 response to `resources/cassettes/v1/`, and returns the live response to the render
-loop. The `anthropic` package and `ANTHROPIC_API_KEY` are required only for this
-live path.
+loop. Anthropic API providers use `AnthropicModelClient` and require the
+`anthropic` package plus `ANTHROPIC_API_KEY`. CLI providers shell out to `claude`
+or `codex` and use the auth already configured by those tools.
+
+The default CLI commands are:
+
+```bash
+claude --print --output-format text --model <model>
+codex exec --model <model> --sandbox read-only --ask-for-approval never --color never -
+```
+
+Override them with `MINT_CLAUDE_CLI_COMMAND` or `MINT_CODEX_CLI_COMMAND`. The
+override command must read the render prompt from stdin and write the raw model
+response to stdout.
 
 ## Attempt manifests
 

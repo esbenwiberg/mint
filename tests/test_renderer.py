@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 
 import pytest
 
 from mint_cli.errors import MintError
 from mint_cli.renderer import (
     DeterministicRenderer,
+    CliModelClient,
     ModelOutputError,
     ModelRenderer,
     RecordingClient,
@@ -14,6 +17,7 @@ from mint_cli.renderer import (
     ScriptedModelClient,
     apply_patch,
     build_prompt,
+    cassette_model,
     cassette_id,
     extract_json,
     get_renderer,
@@ -244,9 +248,93 @@ def test_build_prompt_includes_required_module_code_contents():
 def test_get_renderer_selects_provider():
     assert get_renderer("local", model="m", prompt_version="v").name == "deterministic"
     client = ScriptedModelClient({"default": "{}"})
-    assert get_renderer("model", model="m", prompt_version="v", model_client=client).name == "model"
+    assert (
+        get_renderer("model", model="m", prompt_version="v", model_client=client).name
+        == "model"
+    )
+    assert (
+        get_renderer(
+            "claude-cli", model="sonnet", prompt_version="v", model_client=client
+        ).name
+        == "model"
+    )
+    assert (
+        get_renderer(
+            "codex-cli", model="gpt-5-codex", prompt_version="v", model_client=client
+        ).name
+        == "model"
+    )
     with pytest.raises(MintError, match="Unknown renderer provider"):
         get_renderer("banana", model="m", prompt_version="v")
+
+
+def test_cli_model_client_reads_stdout_from_command(tmp_path):
+    script = tmp_path / "fake_model.py"
+    script.write_text(
+        "import json, sys\n"
+        "prompt = sys.stdin.read()\n"
+        "assert '# System instructions' in prompt\n"
+        "assert '# Render request' in prompt\n"
+        "print(json.dumps({'summary': 'ok', 'files': "
+        "[{'path': 'a.py', 'action': 'write', 'contents': 'x'}]}))\n",
+        encoding="utf-8",
+    )
+    client = CliModelClient(
+        name="Fake CLI",
+        command=[sys.executable, str(script)],
+        timeout_seconds=30,
+    )
+
+    response = client.complete(system="system", prompt="prompt", request=make_request())
+
+    assert json.loads(response)["summary"] == "ok"
+
+
+def test_cli_model_provider_records_with_command_override(tmp_path, monkeypatch):
+    script = tmp_path / "fake_model.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'summary': 'ok', 'files': "
+        "[{'path': 'a.py', 'action': 'write', 'contents': 'x'}]}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MINT_LIVE", "1")
+    monkeypatch.setenv(
+        "MINT_CLAUDE_CLI_COMMAND",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+    )
+    renderer = get_renderer(
+        "claude-cli",
+        model="sonnet",
+        prompt_version="pv1",
+        cassette_dir=tmp_path,
+    )
+
+    outcome = renderer.render(make_request())
+
+    assert outcome.patch["summary"] == "ok"
+    assert outcome.cassette_id is not None
+    cassette = json.loads((tmp_path / "v1" / f"{outcome.cassette_id}.json").read_text())
+    assert cassette["model"] == "claude-cli:sonnet"
+
+
+def test_cli_model_provider_missing_executable_fails_clearly(monkeypatch):
+    monkeypatch.setenv("MINT_CLI_MODEL_TIMEOUT_SECONDS", "30")
+    client = CliModelClient(
+        name="Fake CLI",
+        command=["definitely-not-a-mint-model-cli"],
+    )
+
+    with pytest.raises(MintError, match="executable not found"):
+        client.complete(system="system", prompt="prompt", request=make_request())
+
+
+def test_cassette_model_scopes_cli_providers():
+    assert cassette_model("model", "sonnet") == "sonnet"
+    assert cassette_model("anthropic", "sonnet") == "sonnet"
+    assert cassette_model("claude-cli", "sonnet") == "claude-cli:sonnet"
+    assert cassette_model("codex-cli", "gpt-5-codex") == "codex-cli:gpt-5-codex"
 
 
 # ---- model record/replay cassettes ----

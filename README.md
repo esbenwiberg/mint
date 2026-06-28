@@ -40,10 +40,12 @@ That gives you a complete offline smoke test. To start your own arbitrary module
 after that, use the model-backed path:
 
 ```bash
-ANTHROPIC_MODEL=your-anthropic-model-id
-mint new notes --renderer model --model "$ANTHROPIC_MODEL" --prompt-version notes-v1
+mint new notes --renderer claude-cli --model sonnet --prompt-version notes-v1
 mint next notes
 ```
+
+Model providers are `model`/`anthropic` for the Anthropic API, `claude-cli` for
+Claude Code, and `codex-cli` for Codex CLI.
 
 Render the built-in dependency demo:
 
@@ -63,22 +65,24 @@ mint render calc-cli
 Create a TypeScript library spec:
 
 ```bash
-ANTHROPIC_MODEL=your-anthropic-model-id
-mint new calc-ts --stack typescript-lib --renderer model \
-  --model "$ANTHROPIC_MODEL" --prompt-version calc-ts-v1
+CODEX_MODEL=your-codex-model-id
+mint new calc-ts --stack typescript-lib --renderer codex-cli \
+  --model "$CODEX_MODEL" --prompt-version calc-ts-v1
 $EDITOR .mint/specs/calc-ts.mint.md
 mint healthcheck calc-ts
 MINT_LIVE=1 mint live-smoke calc-ts
 mint render calc-ts
 ```
 
-Everything above runs offline. Live provider recording is manual-only:
+Ordinary renders run offline from replay cassettes. Live provider recording is
+manual-only:
 
 ```bash
 MINT_LIVE=1 mint live-smoke calc-cli
 ```
 
-That path requires `ANTHROPIC_API_KEY` and the `live` optional extra.
+Anthropic API providers require `ANTHROPIC_API_KEY` and the `live` optional extra.
+CLI providers use the auth already configured in `claude` or `codex`.
 
 ## Creating A New Spec
 
@@ -86,16 +90,16 @@ For a fresh arbitrary module in an initialized Mint project, scaffold a
 model-backed spec:
 
 ```bash
-ANTHROPIC_MODEL=your-anthropic-model-id
-mint new notes --renderer model --model "$ANTHROPIC_MODEL" --prompt-version notes-v1
+mint new notes --renderer claude-cli --model sonnet --prompt-version notes-v1
 $EDITOR .mint/specs/notes.mint.md
 mint lint notes
 mint healthcheck notes   # points out missing replay cassettes before first recording
 MINT_LIVE=1 mint live-smoke notes
 ```
 
-Replace `your-anthropic-model-id` before running `mint new`; Mint rejects that
-literal placeholder so it does not get recorded into a spec by accident.
+For Anthropic API recording instead, use `--renderer anthropic --model MODEL_ID`
+and export `ANTHROPIC_API_KEY` before `live-smoke`. Mint rejects placeholder model
+ids so they do not get recorded into a spec by accident.
 
 The live smoke run records cassettes. After that, ordinary `mint render notes`
 replays the recorded responses offline. If you want deterministic offline rendering

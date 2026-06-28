@@ -122,6 +122,28 @@ def test_cli_new_model_scaffolds_renderer_frontmatter(make_project) -> None:
     assert "rendererPromptVersion: scratch-v1" in text
 
 
+def test_cli_new_codex_cli_scaffolds_renderer_frontmatter(make_project) -> None:
+    project = make_project()
+
+    created = run_mint(
+        "new",
+        "scratch",
+        "--renderer",
+        "codex-cli",
+        "--model",
+        "gpt-5-codex",
+        "--prompt-version",
+        "scratch-v1",
+        cwd=project.root,
+    )
+
+    assert created.returncode == 0, created.stderr
+    text = project.spec_path("scratch").read_text(encoding="utf-8")
+    assert "rendererProvider: codex-cli" in text
+    assert "rendererModel: gpt-5-codex" in text
+    assert "rendererPromptVersion: scratch-v1" in text
+
+
 def test_cli_new_typescript_stack_scaffolds_ts_spec(make_project) -> None:
     project = make_project()
 
@@ -178,7 +200,7 @@ def test_cli_new_model_rejects_placeholder_model_id(make_project) -> None:
     )
 
     assert result.returncode == 1
-    assert "must be a real Anthropic model id" in result.stdout
+    assert "must be a real model id" in result.stdout
     assert not project.spec_path("scratch").exists()
 
 

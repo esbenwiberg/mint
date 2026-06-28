@@ -50,19 +50,20 @@ mint render calc-cli        # renders lexer -> parser -> evaluator -> calc-cli
 mint render mint-hashing    # renders a mint hashing component via replay
 
 # New arbitrary specs opt into the model renderer:
-ANTHROPIC_MODEL=your-anthropic-model-id
-mint new notes --renderer model --model "$ANTHROPIC_MODEL" --prompt-version notes-v1
+mint new notes --renderer claude-cli --model sonnet --prompt-version notes-v1
 MINT_LIVE=1 mint live-smoke notes
 
 # New TypeScript library specs use the same model/replay path:
-mint new calc-ts --stack typescript-lib --renderer model \
-  --model "$ANTHROPIC_MODEL" --prompt-version calc-ts-v1
+CODEX_MODEL=your-codex-model-id
+mint new calc-ts --stack typescript-lib --renderer codex-cli \
+  --model "$CODEX_MODEL" --prompt-version calc-ts-v1
 ```
 
-Everything runs offline. The default renderer is deterministic; the model-backed
-renderer replays local cassettes by default and records live responses only behind
-`MINT_LIVE=1`. The replay fixtures include both the calculator graph and a
-self-hosted `mint-hashing` component checked for parity with `mint_cli.hashing`.
+Ordinary renders run offline. The default renderer is deterministic; the
+model-backed renderer replays local cassettes by default and records live responses
+only behind `MINT_LIVE=1`. The replay fixtures include both the calculator graph
+and a self-hosted `mint-hashing` component checked for parity with
+`mint_cli.hashing`.
 
 ## Current Gates
 

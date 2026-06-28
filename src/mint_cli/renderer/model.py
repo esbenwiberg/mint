@@ -3,13 +3,18 @@
 The renderer is decoupled from any provider via the :class:`ModelClient` protocol:
 ``complete(system, prompt, request) -> str``. Tests inject a scripted client that
 returns canned patch JSON, so the whole path is exercised with **no network and no
-API key**. A thin real Anthropic client is provided but only imported on demand.
+API key**. Thin live clients are provided for Anthropic's API and local model
+CLIs, but they are only reached through the explicit live-record path.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
+import shutil
+import subprocess
 from typing import Any, Callable, Protocol
 
 from ..errors import MintError
@@ -246,6 +251,139 @@ class ScriptedModelClient:
             f"ScriptedModelClient has no response for {keys[0]} "
             f"(known keys: {', '.join(sorted(self._responses))})"
         )
+
+
+class CliModelClient:
+    """Run a non-interactive model CLI and read the JSON patch from stdout."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        command: list[str],
+        timeout_seconds: int | None = None,
+    ) -> None:
+        if not command:
+            raise MintError(f"{name} command is empty.")
+        self.name = name
+        self.command = command
+        self.timeout_seconds = timeout_seconds or _cli_timeout_seconds()
+
+    def complete(self, *, system: str, prompt: str, request: RenderRequest) -> str:
+        executable = self.command[0]
+        if shutil.which(executable) is None:
+            raise MintError(
+                f"{self.name} executable not found: {executable!r}. "
+                f"Install it, put it on PATH, or set {self._env_hint()}."
+            )
+        input_text = _cli_input(system=system, prompt=prompt)
+        try:
+            result = subprocess.run(
+                self.command,
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=self.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise MintError(
+                f"{self.name} command timed out after {self.timeout_seconds}s "
+                f"for {request.current_unit_id} ({request.phase})."
+            ) from exc
+        except OSError as exc:
+            raise MintError(f"{self.name} command failed to start: {exc}") from exc
+
+        if result.returncode != 0:
+            detail = _tail(result.stderr.strip() or result.stdout.strip())
+            raise MintError(
+                f"{self.name} command failed with exit code {result.returncode}."
+                + (f"\n{detail}" if detail else "")
+            )
+        response = result.stdout.strip()
+        if not response:
+            raise MintError(f"{self.name} command produced no stdout.")
+        return response
+
+    def _env_hint(self) -> str:
+        return "the provider-specific MINT_*_CLI_COMMAND override"
+
+
+class ClaudeCliModelClient(CliModelClient):
+    """Live client for Claude Code's non-interactive print mode."""
+
+    def __init__(self, model: str) -> None:
+        command = _command_from_env("MINT_CLAUDE_CLI_COMMAND")
+        if command is None:
+            command = ["claude", "--print", "--output-format", "text", "--model", model]
+        super().__init__(name="Claude CLI", command=command)
+
+    def _env_hint(self) -> str:
+        return "MINT_CLAUDE_CLI_COMMAND"
+
+
+class CodexCliModelClient(CliModelClient):
+    """Live client for Codex CLI's non-interactive exec mode."""
+
+    def __init__(self, model: str) -> None:
+        command = _command_from_env("MINT_CODEX_CLI_COMMAND")
+        if command is None:
+            command = [
+                "codex",
+                "exec",
+                "--model",
+                model,
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "--color",
+                "never",
+                "-",
+            ]
+        super().__init__(name="Codex CLI", command=command)
+
+    def _env_hint(self) -> str:
+        return "MINT_CODEX_CLI_COMMAND"
+
+
+def _command_from_env(name: str) -> list[str] | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return shlex.split(value)
+    except ValueError as exc:
+        raise MintError(f"{name} is not a valid shell-style command: {exc}") from exc
+
+
+def _cli_timeout_seconds() -> int:
+    value = os.environ.get("MINT_CLI_MODEL_TIMEOUT_SECONDS")
+    if value is None or not value.strip():
+        return 1800
+    try:
+        seconds = int(value)
+    except ValueError as exc:
+        raise MintError("MINT_CLI_MODEL_TIMEOUT_SECONDS must be an integer.") from exc
+    if seconds <= 0:
+        raise MintError("MINT_CLI_MODEL_TIMEOUT_SECONDS must be greater than 0.")
+    return seconds
+
+
+def _cli_input(*, system: str, prompt: str) -> str:
+    return (
+        "# System instructions\n"
+        f"{system.strip()}\n\n"
+        "# Render request\n"
+        f"{prompt.strip()}\n"
+    )
+
+
+def _tail(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+    return "..." + text[-limit:]
 
 
 class AnthropicModelClient:  # pragma: no cover - requires network + key

@@ -94,6 +94,10 @@ class ModelClient(Protocol):
 - `RecordingClient` — wraps a live provider when `MINT_LIVE=1` and writes cassettes.
 - `AnthropicModelClient` — real provider, imported lazily; errors clearly without
   `ANTHROPIC_API_KEY`. It is only reached through the explicit live-record path.
+- `ClaudeCliModelClient` — shells out to `claude --print` and reads the model
+  response from stdout. Override with `MINT_CLAUDE_CLI_COMMAND`.
+- `CodexCliModelClient` — shells out to `codex exec` in read-only/no-approval mode
+  and reads the model response from stdout. Override with `MINT_CODEX_CLI_COMMAND`.
 
 See [record-replay.md](record-replay.md) for cassette layout and the re-record flow.
 
@@ -110,6 +114,8 @@ the exact validation error back to the model while retries remain.
 - `model` / `anthropic` → `ModelRenderer`; uses the injected `model_client`, or
   `ReplayClient` by default. Set `MINT_LIVE=1` to wrap `AnthropicModelClient` in
   `RecordingClient` and refresh cassettes.
+- `claude-cli` / `codex-cli` → `ModelRenderer`; uses `ReplayClient` by default.
+  Set `MINT_LIVE=1` to wrap the matching CLI client in `RecordingClient`.
 - anything else → `MintError` listing the valid providers.
 
 Set the default in `mint.yaml` under `renderer.provider`. Tests inject a mock via

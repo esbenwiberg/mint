@@ -12,11 +12,11 @@ TypeScript templates yet.
 ## Create a TypeScript spec
 
 ```bash
-ANTHROPIC_MODEL=your-anthropic-model-id
+CODEX_MODEL=your-codex-model-id
 mint new calc-ts \
   --stack typescript-lib \
-  --renderer model \
-  --model "$ANTHROPIC_MODEL" \
+  --renderer codex-cli \
+  --model "$CODEX_MODEL" \
   --prompt-version calc-ts-v1
 
 $EDITOR .mint/specs/calc-ts.mint.md

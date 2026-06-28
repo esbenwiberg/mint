@@ -423,13 +423,30 @@ def test_new_module_can_scaffold_typescript_spec(make_project):
     assert spec.stack == "typescript-lib"
 
 
+def test_new_module_can_scaffold_claude_cli_spec(make_project):
+    project = make_project()
+    status, output = workflow.new_module(
+        "notes",
+        renderer="claude-cli",
+        model="sonnet",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+
+    assert status == 0, output
+    assert "First live render/record: MINT_LIVE=1 mint live-smoke notes" in output
+    text = project.spec_path("notes").read_text(encoding="utf-8")
+    assert "rendererProvider: claude-cli" in text
+    assert "rendererModel: sonnet" in text
+
+
 def test_new_module_rejects_model_without_model_renderer(make_project):
     project = make_project()
 
     status, output = workflow.new_module("notes", model="mock-model", root=project.root)
 
     assert status == 1
-    assert "--model and --prompt-version require --renderer model" in output
+    assert "--model and --prompt-version require a model renderer" in output
 
 
 def test_new_module_requires_model_metadata_for_model_renderer(make_project):
@@ -454,7 +471,27 @@ def test_new_module_rejects_placeholder_model_id(make_project):
     )
 
     assert status == 1
-    assert "must be a real Anthropic model id" in output
+    assert "must be a real model id" in output
+
+
+def test_live_smoke_cli_provider_does_not_require_anthropic_key(make_project, monkeypatch):
+    project = make_project()
+    workflow.new_module(
+        "notes",
+        renderer="claude-cli",
+        model="sonnet",
+        prompt_version="notes-v1",
+        root=project.root,
+    )
+    monkeypatch.setenv("MINT_LIVE", "1")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("MINT_CLAUDE_CLI_COMMAND", "definitely-not-a-mint-model-cli")
+
+    status, output = workflow.live_smoke_module("notes", root=project.root)
+
+    assert status == 1
+    assert "ANTHROPIC_API_KEY" not in output
+    assert "Claude CLI executable not found" in output
 
 
 def test_next_guides_missing_spec_to_model_scaffold(make_project):

@@ -51,7 +51,7 @@ specs and for debugging hashes.
 mint parse tasklist
 ```
 
-## `mint new <module> [--stack STACK] [--requires ...] [--renderer model]`
+## `mint new <module> [--stack STACK] [--requires ...] [--renderer PROVIDER]`
 
 Scaffold a parseable starter spec under the configured `specsDir`
 (`.mint/specs` by default).
@@ -66,17 +66,19 @@ The default starter uses `stack: python-lib`. Pass `--stack typescript-lib` or
 added to both `imports` and `requires` so the module graph and prompt context start
 wired.
 
-Fresh arbitrary specs should opt into the model renderer:
+Fresh arbitrary specs should opt into a model renderer. Supported live providers
+are `model`/`anthropic` for the Anthropic API, `claude-cli` for Claude Code, and
+`codex-cli` for Codex CLI:
 
 ```bash
-ANTHROPIC_MODEL=your-anthropic-model-id
-mint new notes --renderer model --model "$ANTHROPIC_MODEL" --prompt-version notes-v1
+mint new notes --renderer claude-cli --model sonnet --prompt-version notes-v1
 mint lint notes
 MINT_LIVE=1 mint live-smoke notes
 ```
 
-Replace `your-anthropic-model-id` before running `mint new`; Mint rejects that
-literal placeholder and also requires `--prompt-version` for model-backed specs.
+Use `--renderer anthropic --model MODEL_ID` for Anthropic API recording. Mint
+rejects placeholder model ids and requires `--prompt-version` for model-backed
+specs.
 
 After the first live render records cassettes, normal offline `mint render notes`
 replays those fixtures.
@@ -84,9 +86,9 @@ replays those fixtures.
 TypeScript modules use the same model/replay flow:
 
 ```bash
-ANTHROPIC_MODEL=your-anthropic-model-id
-mint new calc-ts --stack typescript-lib --renderer model \
-  --model "$ANTHROPIC_MODEL" --prompt-version calc-ts-v1
+CODEX_MODEL=your-codex-model-id
+mint new calc-ts --stack typescript-lib --renderer codex-cli \
+  --model "$CODEX_MODEL" --prompt-version calc-ts-v1
 mint lint calc-ts
 mint healthcheck calc-ts
 MINT_LIVE=1 mint live-smoke calc-ts
@@ -150,10 +152,10 @@ mint healthcheck tasklist
 ```
 
 For a fresh local starter spec, healthcheck fails until you either add/select a
-deterministic template or switch the spec to `rendererProvider: model`. For a fresh
-model spec, healthcheck fails in offline mode until replay cassettes exist for that
-module/model/prompt version. Use `MINT_LIVE=1 mint live-smoke <module>` to record
-the first set.
+deterministic template or switch the spec to a model provider such as
+`rendererProvider: claude-cli`. For a fresh model spec, healthcheck fails in offline
+mode until replay cassettes exist for that module/model/prompt version. Use
+`MINT_LIVE=1 mint live-smoke <module>` to record the first set.
 
 For TypeScript specs, healthcheck checks Node and npm. Package-script validation
 happens at render/test time so a new model patch can create or repair
@@ -201,7 +203,8 @@ render aborts and writes `generated/<module>/.mintgen/reports/budget-abort.json`
 ## `mint live-smoke <module>`
 
 Force a live model render, recording fresh replay cassettes. This command refuses
-unless `MINT_LIVE=1` is set, and it also requires `ANTHROPIC_API_KEY`.
+unless `MINT_LIVE=1` is set. Anthropic API providers also require
+`ANTHROPIC_API_KEY`; CLI providers use the auth already configured in their CLI.
 
 ```bash
 MINT_LIVE=1 mint live-smoke calc-cli

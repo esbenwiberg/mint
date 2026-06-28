@@ -50,12 +50,13 @@ npm dependencies during offline CI.
 ## Live recording
 
 `.github/workflows/live-record.yml` is manual-only (`workflow_dispatch`). It sets
-`MINT_LIVE=1`, requires `ANTHROPIC_API_KEY`, installs the `live` optional extra, and
-runs:
+`MINT_LIVE=1` and runs:
 
 ```bash
 mint live-smoke <module>
 ```
 
 This job is intentionally separate from default CI so routine validation never needs
-network access or provider credentials.
+network access or provider credentials. Anthropic API providers require
+`ANTHROPIC_API_KEY` and the `live` optional extra; CLI providers require the chosen
+CLI to be installed and authenticated in the runner environment.

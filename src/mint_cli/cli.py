@@ -75,19 +75,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     new_parser.add_argument(
         "--renderer",
-        choices=["local", "model"],
+        choices=["local", "deterministic", "model", "anthropic", "claude-cli", "codex-cli"],
         default=None,
-        help="optional per-spec renderer override; use model for fresh template-free specs",
+        help="optional per-spec renderer override; use a model provider for fresh template-free specs",
     )
     new_parser.add_argument(
         "--model",
         default=None,
-        help="required model id when using --renderer model",
+        help="required model id or model label when using a model renderer",
     )
     new_parser.add_argument(
         "--prompt-version",
         default=None,
-        help="required prompt version when using --renderer model",
+        help="required prompt version when using a model renderer",
     )
     new_parser.set_defaults(handler=handle_new)
 

@@ -52,7 +52,7 @@ template: tasklist
 | `imports` | no (`[]`) | Modules whose shared context is pulled in (see [module-graph.md](module-graph.md)) |
 | `requires` | no (`[]`) | Modules that must be built first |
 | `template` | no | Deterministic template to use; defaults to `module` |
-| `rendererProvider` | no | Per-spec renderer override, e.g. `model` for replayed template-free specs |
+| `rendererProvider` | no | Per-spec renderer override, e.g. `model`, `anthropic`, `claude-cli`, or `codex-cli` for replayed template-free specs |
 | `rendererModel` | no | Per-spec model id override used by cassettes |
 | `rendererPromptVersion` | no | Per-spec prompt version override used by cassettes |
 
