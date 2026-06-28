@@ -24,6 +24,9 @@ Everything known about the unit at render time:
 - `units_so_far`, `current_unit` — the slice being built.
 - `phase` (`"unit"` | `"conformance"`), `attempt`, `feedback` — retry context; on a
   retry, `feedback` carries the failing test output.
+- `prompt_hints`, `code_fence_language` — target-stack guidance supplied by
+  `stacks.py`, including TypeScript package-script expectations and code fences for
+  required-module context.
 
 ### `RenderOutcome`
 

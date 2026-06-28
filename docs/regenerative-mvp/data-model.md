@@ -129,7 +129,7 @@ Shape:
 {
   "version": 1,
   "module": "todo-cli",
-  "specPath": "specs/todo-cli.mint.md",
+  "specPath": ".mint/specs/todo-cli.mint.md",
   "renderId": "2026-06-27T12-00-00Z-todo-cli",
   "specHash": "...",
   "nonFunctionalSpecHash": "...",
@@ -223,7 +223,7 @@ allowed only through the renderer workflow.
 
 Durable fixes belong in:
 
-- `specs/*.mint.md`
+- `.mint/specs/*.mint.md`
 - `resources/`
 - `mint.yaml`
 - `test_scripts/`

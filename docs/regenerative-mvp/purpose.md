@@ -65,7 +65,7 @@ highly visual or tightly coupled systems.
 
 The MVP is successful when we can:
 
-- write one `specs/<module>.mint.md`
+- write one `.mint/specs/<module>.mint.md`
 - run `mint healthcheck <module>`
 - run `mint render <module>`
 - inspect generated code under `generated/<module>/`

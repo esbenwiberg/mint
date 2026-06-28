@@ -14,6 +14,7 @@ All code lives under `src/mint_cli/`.
 | `hashing.py` | canonical JSON hashing + a content hash of a generated tree |
 | `state.py` | `.mintgen/module.json` metadata, render log, per-attempt audit trail |
 | `gitutil.py` | nested-repo git operations (init, commit, reset, HEAD) |
+| `stacks.py` | target-stack adapters for Python and TypeScript toolchains |
 | `test_quality.py` | anti-weak-test gate: coverage, traceability, mutation probe |
 | `renderer/` | pluggable renderer adapters + the file-patch contract |
 | `errors.py` | `MintError`, the single user-facing error type |
@@ -22,9 +23,11 @@ All code lives under `src/mint_cli/`.
 
 `render_single_module` runs this pipeline:
 
-1. **Healthcheck** — spec parses, scripts exist and are executable, `imports`/
-   `requires` resolve, linked resources exist. Fail fast with a path + fix hint.
-2. **Prepare** — run the prepare script (e.g. confirm pytest is available).
+1. **Healthcheck** — spec parses, the selected stack adapter can prepare its
+   toolchain, `imports`/`requires` resolve, linked resources exist. Fail fast with a
+   path + fix hint.
+2. **Prepare** — ask the stack adapter to prepare (Python runs the configured
+   prepare script; TypeScript checks Node/npm).
 3. **Plan** — `determine_render_plan` compares stored hashes against current ones
    and returns a `[start, end]` unit range (or a no-op). See
    [module-graph.md](module-graph.md) and
@@ -38,12 +41,15 @@ All code lives under `src/mint_cli/`.
      or oversized model output is recorded as `patch_invalid` and fed back to the
      model while retries remain.
    - Apply the patch to the generated module dir and the conformance dir.
-   - Run the **unit gate**; on failure, re-render once with the test output as
-     feedback (one retry).
-   - Run the **conformance gate** (which also re-runs all prior units' conformance
-     tests as regression); on failure, re-render once with feedback.
-   - Run the **test-quality gate**: coverage threshold, acceptance traceability,
-     and a lightweight mutation probe. A shallow green suite fails here.
+   - Run the stack adapter's **unit gate**; on failure, re-render once with the test
+     output as feedback (one retry). Python uses pytest. TypeScript runs
+     `npm run typecheck` (`tsc --noEmit`) and Vitest unit tests.
+   - Run the stack adapter's **conformance gate** (which also re-runs all prior
+     units' conformance tests as regression); on failure, re-render once with
+     feedback. TypeScript uses Vitest against `conformance/<module>/`.
+   - Run the **test-quality gate**: Python runs coverage threshold, acceptance
+     traceability, and a lightweight mutation probe. TypeScript records this gate as
+     skipped until TS coverage/mutation support exists.
    - Strip runtime caches, update metadata, and commit two checkpoints (code, then
      metadata) to the module's nested git repo.
 
@@ -59,23 +65,29 @@ Specs may override the configured renderer with `rendererProvider`,
 render through replayed model cassettes while the original taskstore/tasklist demo
 continues to use deterministic templates.
 
-The self-hosting proof uses the same override path for `specs/mint-hashing.mint.md`,
+The `stack` frontmatter selects a target-stack adapter. `python-cli`/`python-lib`
+use the Python adapter and the default project scripts. `typescript-lib` and
+`typescript-node` use the TypeScript adapter, which drives npm package scripts,
+discovers TypeScript source for required-module prompts, and writes explicit local
+file dependencies for required TypeScript modules.
+
+The self-hosting proof uses the same override path for `.mint/specs/mint-hashing.mint.md`,
 then compares the generated package against the handwritten `mint_cli.hashing`
 module in the test suite.
 
 ## Data flow
 
 ```
-specs/*.mint.md ──parse──▶ Spec IR ──hash──▶ plan ──▶ RenderRequest
-                                                          │
-                                                          ▼
-                                          Renderer adapter (local | model)
-                                                          │  file patch (JSON)
-                                                          ▼
-                              apply_patch ──▶ generated/<m>/ + conformance/<m>/
-                                                          │
-                             unit + conformance + test-quality gates
-                                                          │ pass
+.mint/specs/*.mint.md ──parse──▶ Spec IR ──stack adapter + hash──▶ plan ──▶ RenderRequest
+                                                                │
+                                                                ▼
+                                                Renderer adapter (local | model)
+                                                                │  file patch (JSON)
+                                                                ▼
+                                    apply_patch ──▶ generated/<m>/ + conformance/<m>/
+                                                                │
+                                   stack unit + conformance + test-quality gates
+                                                                │ pass
                                                           ▼
                           .mintgen/module.json + git checkpoints (nested repo)
 ```

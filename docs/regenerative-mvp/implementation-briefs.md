@@ -11,7 +11,7 @@ Deliverables:
 
 - Python 3.12 project skeleton for the `mint` CLI
 - `mint.yaml` example
-- `specs/example.mint.md`
+- `.mint/specs/example.mint.md`
 - `test_scripts/` example scripts for Python CLI/library generation
 - `.gitignore` entries for generated artifacts if needed
 - short contributor note: generated code is read-only

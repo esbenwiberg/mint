@@ -1,7 +1,8 @@
 # Spec format (`*.mint.md`)
 
 A spec is Markdown with a YAML frontmatter block. One spec describes one module.
-The file must be named `<module>.mint.md` and live under `specs/`.
+The file must be named `<module>.mint.md` and live under the configured
+`specsDir`, which defaults to `.mint/specs/`.
 
 ## Example
 
@@ -47,7 +48,7 @@ template: tasklist
 | --- | --- | --- |
 | `module` | yes | Module name; must equal the filename stem |
 | `description` | no | Free text |
-| `stack` | yes | Target stack hint (e.g. `python-cli`, `python-lib`) |
+| `stack` | yes | Target stack (`python-cli`, `python-lib`, `typescript-lib`, `typescript-node`) |
 | `imports` | no (`[]`) | Modules whose shared context is pulled in (see [module-graph.md](module-graph.md)) |
 | `requires` | no (`[]`) | Modules that must be built first |
 | `template` | no | Deterministic template to use; defaults to `module` |
@@ -59,6 +60,31 @@ Inline lists (`[a, b]`) and `[]` are supported by the YAML subset in `config.py`
 
 Template-free model specs omit `template` and set the renderer override keys. The
 deterministic renderer remains for the built-in demo templates and tests.
+
+## TypeScript example
+
+TypeScript stacks are model/replay only. A minimal `typescript-lib` spec starts like:
+
+```markdown
+---
+module: calc-ts
+description: TypeScript calculator library
+imports: []
+requires: []
+stack: typescript-lib
+rendererProvider: model
+rendererModel: your-model-id
+rendererPromptVersion: calc-ts-v1
+---
+
+## implementation
+
+- Expose the public API from `src/index.ts`.
+- `package.json` scripts run `tsc --noEmit`, `vitest run tests`, and `vitest run`.
+```
+
+See [typescript.md](typescript.md) for the generated package contract and current
+limits.
 
 ## Body sections
 

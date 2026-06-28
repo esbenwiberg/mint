@@ -5,6 +5,43 @@ commands take a module name; `render` takes optional range flags. Errors are
 `MintError`s printed as `ERROR: …` on stderr with a non-zero exit, and include file
 paths and fix hints.
 
+## `mint init [--write]`
+
+Print the expected project skeleton, or create the missing files in the current
+directory.
+
+```bash
+mint init
+mint init --write
+```
+
+`--write` creates the standard Mint project shape without overwriting existing
+files:
+
+```text
+mint.yaml
+.mint/specs/example.mint.md
+resources/
+generated/
+conformance/
+test_scripts/
+```
+
+It also writes the default generated-code test scripts and makes newly created
+scripts executable. Existing files are kept and reported. The seeded `example`
+module uses a built-in deterministic template, so the first smoke path is fully
+offline:
+
+```bash
+mint doctor
+mint next
+mint render example
+mint report example
+```
+
+You can also rerun `mint init --write` later to restore missing default directories,
+the seeded example spec, or default test scripts without overwriting existing files.
+
 ## `mint parse <module>`
 
 Parse the spec and print the canonical JSON IR (sorted, stable). Useful for diffing
@@ -14,17 +51,51 @@ specs and for debugging hashes.
 mint parse tasklist
 ```
 
-## `mint new <module> [--requires ...]`
+## `mint new <module> [--stack STACK] [--requires ...] [--renderer model]`
 
-Scaffold a parseable starter spec under `specs/<module>.mint.md`.
+Scaffold a parseable starter spec under the configured `specsDir`
+(`.mint/specs` by default).
 
 ```bash
 mint new calc-cli --requires evaluator
-# Wrote specs/calc-cli.mint.md
+# Wrote .mint/specs/calc-cli.mint.md
 ```
 
-The starter is template-free. If dependencies are supplied, they are added to both
-`imports` and `requires` so the module graph and prompt context start wired.
+The default starter uses `stack: python-lib`. Pass `--stack typescript-lib` or
+`--stack typescript-node` for TypeScript. If dependencies are supplied, they are
+added to both `imports` and `requires` so the module graph and prompt context start
+wired.
+
+Fresh arbitrary specs should opt into the model renderer:
+
+```bash
+ANTHROPIC_MODEL=your-anthropic-model-id
+mint new notes --renderer model --model "$ANTHROPIC_MODEL" --prompt-version notes-v1
+mint lint notes
+MINT_LIVE=1 mint live-smoke notes
+```
+
+Replace `your-anthropic-model-id` before running `mint new`; Mint rejects that
+literal placeholder and also requires `--prompt-version` for model-backed specs.
+
+After the first live render records cassettes, normal offline `mint render notes`
+replays those fixtures.
+
+TypeScript modules use the same model/replay flow:
+
+```bash
+ANTHROPIC_MODEL=your-anthropic-model-id
+mint new calc-ts --stack typescript-lib --renderer model \
+  --model "$ANTHROPIC_MODEL" --prompt-version calc-ts-v1
+mint lint calc-ts
+mint healthcheck calc-ts
+MINT_LIVE=1 mint live-smoke calc-ts
+mint render calc-ts
+```
+
+Generated TypeScript packages must provide npm-compatible scripts for
+`tsc --noEmit`, `vitest run tests`, and `vitest run`; see
+[typescript.md](typescript.md).
 
 ## `mint lint <module>`
 
@@ -36,11 +107,30 @@ present.
 mint lint calc-cli
 ```
 
+## `mint next [<module>]`
+
+Show the next recommended action for the project or for one module. This is the
+guided entry point when you are not sure whether to initialize, scaffold, lint,
+healthcheck, record cassettes, render, or inspect reports.
+
+```bash
+mint next
+# NEXT example
+# - State: ready to render (no generated metadata).
+# - Next command: mint render example
+
+mint next notes
+# NEXT notes
+# - State: pre-render checks need attention.
+# - Next command: MINT_LIVE=1 mint live-smoke notes
+```
+
 ## `mint doctor`
 
-Check the project root: `mint.yaml`, executable scripts, pytest availability, spec
-parsing, missing `imports`/`requires`, and replay cassettes when the model renderer is
-configured.
+Check the project root: `mint.yaml`, executable scripts, stack toolchains
+(pytest for Python, Node/npm for TypeScript), spec parsing, missing
+`imports`/`requires`, local renderer templates, and replay cassettes when the model
+renderer is configured.
 
 ```bash
 mint doctor
@@ -48,15 +138,26 @@ mint doctor
 
 ## `mint healthcheck <module>`
 
-Validate everything needed before a render: spec parses, scripts exist and are
-executable, `imports`/`requires` resolve, linked resources exist, existing metadata
-is valid. Exit 0 = `PASS`, exit 1 = `FAIL` with reasons.
+Validate everything needed before a render: spec parses, the selected stack adapter
+can prepare its toolchain, `imports`/`requires` resolve, renderer/template selection
+can run, linked resources exist, existing metadata is valid. Exit 0 = `PASS`, exit
+1 = `FAIL` with reasons.
 
 ```bash
 mint healthcheck tasklist
 # FAIL tasklist
 # - Unit script is not executable: test_scripts/run_unit_tests.sh (fix: chmod +x …)
 ```
+
+For a fresh local starter spec, healthcheck fails until you either add/select a
+deterministic template or switch the spec to `rendererProvider: model`. For a fresh
+model spec, healthcheck fails in offline mode until replay cassettes exist for that
+module/model/prompt version. Use `MINT_LIVE=1 mint live-smoke <module>` to record
+the first set.
+
+For TypeScript specs, healthcheck checks Node and npm. Package-script validation
+happens at render/test time so a new model patch can create or repair
+`package.json`.
 
 ## `mint status <module>`
 
@@ -143,10 +244,6 @@ Remove the module's generated output and conformance tests. Refuses without `--y
 mint clean tasklist --yes
 ```
 
-## `mint init`
-
-Print the expected project skeleton (config, specs, scripts, output dirs).
-
 ## End-to-end demo
 
 ```bash
@@ -154,11 +251,11 @@ mint render tasklist          # renders taskstore then tasklist; all gates pass
 mint render tasklist          # NOOP taskstore / NOOP tasklist
 
 # Editing one later unit re-renders only that slice:
-$EDITOR specs/tasklist.mint.md   # change FR2
+$EDITOR .mint/specs/tasklist.mint.md   # change FR2
 mint render tasklist             # Range: FR2:FR2
 
 # Editing a required module cascades to its dependents:
-$EDITOR specs/taskstore.mint.md  # change FR2
+$EDITOR .mint/specs/taskstore.mint.md  # change FR2
 mint render tasklist             # taskstore FR2, then tasklist (required code changed)
 ```
 
@@ -184,14 +281,14 @@ RENDER evaluator
 RENDER calc-cli
 ```
 
-The specs live at `specs/lexer.mint.md`, `specs/parser.mint.md`,
-`specs/evaluator.mint.md`, and `specs/calc-cli.mint.md`. They have no `template`
-key; each opts into `rendererProvider: model` and replays from
+The specs live at `.mint/specs/lexer.mint.md`, `.mint/specs/parser.mint.md`,
+`.mint/specs/evaluator.mint.md`, and `.mint/specs/calc-cli.mint.md`. They have no
+`template` key; each opts into `rendererProvider: model` and replays from
 `resources/cassettes/v1/`.
 
 ## Self-hosting proof
 
-`specs/mint-hashing.mint.md` renders a model-backed implementation of the hashing
+`.mint/specs/mint-hashing.mint.md` renders a model-backed implementation of the hashing
 helpers into `generated/mint-hashing/`. The test suite compares that generated
 package against the handwritten `mint_cli.hashing` behavior.
 

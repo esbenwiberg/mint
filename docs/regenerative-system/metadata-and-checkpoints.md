@@ -23,9 +23,11 @@ generated/<module>/
   src/ tests/ …              # the generated code
 ```
 
-`.mintgen/` is committed inside the module repo, but generated runtime caches
-(`__pycache__`, `.pytest_cache`, `*.pyc`) are stripped before every checkpoint and
-never written during test runs (`PYTHONDONTWRITEBYTECODE=1`).
+`.mintgen/` is committed inside the module repo, but generated runtime caches are
+kept out of checkpoints and hashes. Python runs disable bytecode writes
+(`PYTHONDONTWRITEBYTECODE=1`) and strip `__pycache__`, `.pytest_cache`, and `*.pyc`.
+TypeScript runs ignore package-manager/build state such as `node_modules`, `.vite`,
+`.vitest`, `coverage`, and `*.tsbuildinfo`.
 
 ## `module.json`
 
@@ -33,7 +35,7 @@ never written during test runs (`PYTHONDONTWRITEBYTECODE=1`).
 {
   "version": 1,
   "module": "tasklist",
-  "specPath": "specs/tasklist.mint.md",
+  "specPath": ".mint/specs/tasklist.mint.md",
   "renderId": "2026-06-27T…-tasklist",
   "provider": "local",
   "model": "deterministic-python-cli-v0",

@@ -4,7 +4,7 @@
 
 Durable changes belong in:
 
-- `specs/*.mint.md`
+- `.mint/specs/*.mint.md`
 - `resources/`
 - `mint.yaml`
 - `test_scripts/`

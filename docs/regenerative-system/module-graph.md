@@ -28,16 +28,18 @@ required module's spec changes its generated code, which moves the hash, which
 cascades. Worked example:
 
 ```
-edit specs/taskstore.mint.md (FR2 text)
+edit .mint/specs/taskstore.mint.md (FR2 text)
 mint render tasklist
   → RENDER taskstore   (Reason: functional unit changed: FR2)   # required first
   → RENDER tasklist    (Reason: required module code changed)    # dependent cascades
 ```
 
-At test time, dependents must import their required modules. The workflow passes the
-required modules' `src/` dirs to the test scripts via `MINT_REQUIRED_SRC`, and the
-scripts prepend them to `PYTHONPATH`. The transitive closure is included, so
-`A → B → C` works.
+At test time, dependents must import their required modules. The selected stack
+adapter owns that wiring. Python passes required modules' `src/` dirs to the test
+scripts via `MINT_REQUIRED_SRC`, and the scripts prepend them to `PYTHONPATH`.
+TypeScript writes explicit `file:../required-module` dependencies into the
+dependent `package.json` before running npm scripts. The transitive closure is
+included, so `A → B → C` works.
 
 ## `imports` — shared context (no code dependency)
 

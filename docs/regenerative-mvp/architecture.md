@@ -4,7 +4,7 @@
 
 The MVP has six components:
 
-1. **Spec files** under `specs/`.
+1. **Spec files** under `.mint/specs/`.
 2. **Parser** that converts Markdown specs into a structured IR.
 3. **Planner** that decides which module and functional units to render.
 4. **Renderer** adapter that writes code/test changes.
@@ -18,7 +18,7 @@ testable without network or API keys. Model-backed rendering, FastAPI,
 TypeScript, browser/UI, and other adapters come after the first loop is stable.
 
 ```text
-specs/*.mint.md
+.mint/specs/*.mint.md
     |
     v
 parser -> spec IR -> planner -> renderer -> generated/<module>/
@@ -131,8 +131,9 @@ summaries, and ambiguity analysis until the loop works.
 ## Directory Layout
 
 ```text
-specs/
-  example.mint.md
+.mint/
+  specs/
+    example.mint.md
 
 resources/
   example-openapi.yaml

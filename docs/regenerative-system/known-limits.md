@@ -21,13 +21,19 @@ What this system deliberately does *not* do yet, and where it would bite first.
 - **Hash-based change detection only.** Re-render is driven by content hashes, not by
   understanding *what* changed. A whitespace-only spec edit re-renders; a semantically
   irrelevant dependency change still cascades.
-- **Python-only stacks.** Gates assume pytest; the `stack` key is a hint, not a
-  pluggable toolchain.
+- **TypeScript support is library/Node-only.** `typescript-lib` and
+  `typescript-node` use npm-compatible scripts, `tsc --noEmit`, and Vitest, but
+  there are no browser UI, React/Vue/Svelte, or bundler-specific stacks yet.
+- **TypeScript test-quality is skipped.** TS unit and conformance gates run, but
+  coverage, acceptance traceability, and mutation probes are still Python-only.
+- **Mint does not install npm dependencies.** Generated TypeScript packages declare
+  scripts and dependencies; the environment must have/install the package tooling
+  before those scripts can pass.
 - **YAML subset.** `config.py` parses a small YAML subset (scalars, nested maps,
   inline `[a, b]` lists). Block-list syntax and anchors are unsupported.
 - **Conformance regression is "run everything."** Prior units' conformance tests run
-  again via pytest collecting the whole dir — correct, but it scales linearly and has
-  no selective regression.
+  again through the selected stack adapter (pytest for Python, Vitest for
+  TypeScript) — correct, but it scales linearly and has no selective regression.
 - **Run-report costs are estimates.** Reports estimate tokens from prompt/response
   text length and set cost to zero until provider pricing is configured.
 

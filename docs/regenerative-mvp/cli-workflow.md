@@ -20,7 +20,7 @@ mint clean <module>
 Creates the local skeleton:
 
 ```text
-specs/
+.mint/specs/
 resources/
 test_scripts/
 generated/
@@ -32,7 +32,7 @@ It also writes example scripts for the first generated target stack.
 
 ## `mint parse <module>`
 
-Reads `specs/<module>.mint.md`, validates syntax, and prints canonical IR.
+Reads `.mint/specs/<module>.mint.md`, validates syntax, and prints canonical IR.
 
 Checks:
 
@@ -112,7 +112,7 @@ Shows the current generated state:
 
 ```text
 Module: user-auth
-Spec: specs/user-auth.mint.md
+Spec: .mint/specs/user-auth.mint.md
 Generated: generated/user-auth
 Last successful unit: FR2
 Spec hash: changed
