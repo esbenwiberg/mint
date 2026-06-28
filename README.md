@@ -16,36 +16,74 @@ The current v1 system is built around offline, reproducible runs:
 - nested git checkpoints and attempt manifests under `generated/<module>/.mintgen/`
 - explicit e2e tests for the public CLI workflow
 
-## Quick Start
+## Install Mint
 
-Use Python 3.12 or newer.
+Mint is distributed as a Python CLI package. Use Python 3.12 or newer.
+
+From GitHub:
 
 ```bash
-python -m pip install -e ".[dev]"
-mint doctor
-pytest --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q
+python3.12 -m pip install "mint-regenerative @ git+https://github.com/esbenwiberg/mint.git"
+mint --version
 ```
 
-Start a new Mint project from an empty directory:
+For live Anthropic API recording, install the optional `live` extra:
 
 ```bash
+python3.12 -m pip install "mint-regenerative[live] @ git+https://github.com/esbenwiberg/mint.git"
+```
+
+Mint itself is not a Bun/npm package. Bun or npm may be used by generated
+TypeScript modules, but the Mint orchestrator is the Python `mint` CLI.
+
+## Use Mint In A Repo
+
+Initialize Mint metadata in the repo you want Mint to help manage:
+
+```bash
+cd /path/to/your/repo
 mint init --write
 mint next
 mint doctor
+```
+
+That gives you a complete offline smoke test:
+
+```bash
 mint render example
 mint report example
 ```
 
-That gives you a complete offline smoke test. To start your own arbitrary module
-after that, use the model-backed path:
+To let Mint handle a small area of the repo, scaffold one bounded module spec:
 
 ```bash
 mint new notes --renderer claude-cli --model sonnet --prompt-version notes-v1
-mint next notes
+$EDITOR .mint/specs/notes.mint.md
+mint lint notes
+mint healthcheck notes
+MINT_LIVE=1 mint live-smoke notes
+mint render notes
 ```
 
 Model providers are `model`/`anthropic` for the Anthropic API, `claude-cli` for
 Claude Code, and `codex-cli` for Codex CLI.
+
+Good first Mint-owned areas are pure helpers, parsers, formatters, rules engines,
+small libraries, and CLI subcommands with a clear public API. Mint renders output
+under `generated/<module>/`; the `.mint/specs/<module>.mint.md` file is the source
+of truth.
+
+Ordinary renders run offline from replay cassettes. Live provider recording is
+manual-only:
+
+```bash
+MINT_LIVE=1 mint live-smoke notes
+```
+
+Anthropic API providers require `ANTHROPIC_API_KEY` and the `live` optional extra.
+CLI providers use the auth already configured in `claude` or `codex`.
+
+## Demos
 
 Render the built-in dependency demo:
 
@@ -74,16 +112,6 @@ MINT_LIVE=1 mint live-smoke calc-ts
 mint render calc-ts
 ```
 
-Ordinary renders run offline from replay cassettes. Live provider recording is
-manual-only:
-
-```bash
-MINT_LIVE=1 mint live-smoke calc-cli
-```
-
-Anthropic API providers require `ANTHROPIC_API_KEY` and the `live` optional extra.
-CLI providers use the auth already configured in `claude` or `codex`.
-
 ## Creating A New Spec
 
 For a fresh arbitrary module in an initialized Mint project, scaffold a
@@ -111,6 +139,16 @@ When you are unsure where you are in the workflow, ask Mint:
 
 ```bash
 mint next notes
+```
+
+## Local Development
+
+For work on Mint itself:
+
+```bash
+python3.12 -m pip install -e ".[dev]"
+mint doctor
+pytest --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q
 ```
 
 ## Project Layout
