@@ -51,6 +51,9 @@ mint render example
 mint report example
 ```
 
+`mint init --write` also adds generated-output and conformance directories to
+`.gitignore` while keeping their `.gitkeep` placeholders trackable.
+
 To let Mint handle a small area of the repo, scaffold one bounded module spec:
 
 ```bash
@@ -75,6 +78,7 @@ Ordinary renders run offline from replay cassettes. Live provider recording is
 manual-only:
 
 ```bash
+MINT_LIVE=1 mint render notes      # live-record the current incremental plan
 MINT_LIVE=1 mint live-smoke notes
 ```
 
@@ -128,10 +132,14 @@ and export `ANTHROPIC_API_KEY` before `live-smoke`. Mint rejects placeholder mod
 ids so they do not get recorded into a spec by accident.
 
 The live smoke run records cassettes. After that, ordinary `mint render notes`
-replays the recorded responses offline. If you want deterministic offline rendering
-without a model, add a deterministic template for the module and use that template
-from the spec. `mint healthcheck <module>` will tell you when a local spec is
-missing a deterministic template, or when a model spec has no replay cassettes yet.
+replays the recorded responses offline. Editing a model-backed spec changes the
+render prompt, so old cassettes become stale; record again with
+`MINT_LIVE=1 mint render notes` for the current incremental plan, or
+`MINT_LIVE=1 mint live-smoke notes` for a full forced re-record. If you want
+deterministic offline rendering without a model, add a deterministic template for
+the module and use that template from the spec. `mint healthcheck <module>` will
+tell you when a local spec is missing a deterministic template, or when a model spec
+has no replay cassettes yet.
 
 When you are unsure where you are in the workflow, ask Mint:
 

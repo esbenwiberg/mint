@@ -420,6 +420,8 @@ def init_project(*, write: bool = False, root: Path | None = None) -> tuple[int,
     ]:
         _write_init_file(root, rel, contents, executable=True, lines=lines, failures=failures)
 
+    _ensure_gitignore_entries(root, generated_dir, conformance_dir, lines=lines, failures=failures)
+
     if failures:
         output = ["FAIL init", *lines]
         output.extend(f"- FAIL: {failure}" for failure in failures)
@@ -459,6 +461,48 @@ def _write_init_file(
     if executable:
         path.chmod(0o755)
     lines.append(f"- Wrote {rel}")
+
+
+def _ensure_gitignore_entries(
+    root: Path,
+    generated_dir: str,
+    conformance_dir: str,
+    *,
+    lines: list[str],
+    failures: list[str],
+) -> None:
+    path = root / ".gitignore"
+    entries = _mint_gitignore_entries(generated_dir, conformance_dir)
+    if path.exists() and not path.is_file():
+        failures.append(".gitignore is blocked by a non-file path")
+        return
+    if not path.exists():
+        path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        lines.append("- Wrote .gitignore")
+        return
+
+    text = path.read_text(encoding="utf-8")
+    existing = set(text.splitlines())
+    missing = [entry for entry in entries if entry not in existing]
+    if not missing:
+        lines.append("- Kept existing .gitignore")
+        return
+    prefix = "" if not text or text.endswith("\n") else "\n"
+    separator = "" if not text.strip() else "\n"
+    path.write_text(text + prefix + separator + "\n".join(missing) + "\n", encoding="utf-8")
+    lines.append("- Updated .gitignore for Mint generated output")
+
+
+def _mint_gitignore_entries(generated_dir: str, conformance_dir: str) -> list[str]:
+    generated = generated_dir.rstrip("/")
+    conformance = conformance_dir.rstrip("/")
+    return [
+        "# Mint generated artifacts",
+        f"{generated}/*",
+        f"!{generated}/.gitkeep",
+        f"{conformance}/*",
+        f"!{conformance}/.gitkeep",
+    ]
 
 
 def _has_value(value: str | None) -> bool:
@@ -889,6 +933,7 @@ def healthcheck_module(
     *,
     root: Path | None = None,
     allow_missing_replay: bool = False,
+    allow_missing_generated_metadata: bool = False,
 ) -> tuple[int, str]:
     messages: list[str] = []
     failures: list[str] = []
@@ -949,11 +994,16 @@ def healthcheck_module(
             failures.append(f"Generated metadata is invalid JSON: {exc}")
         else:
             if metadata is None:
-                failures.append(
+                message = (
                     f"Generated repo is missing metadata: {context.generated_dir}. "
-                    f"Fix: run `mint clean {context.module} --yes` before retrying, "
-                    "or rerun the render with --force if you intentionally want to replace it."
+                    f"Fix: run `mint clean {context.module} --yes` before retrying. "
+                    f"Next: mint render {context.module} --force if you intentionally "
+                    "want to replace this directory."
                 )
+                if allow_missing_generated_metadata:
+                    messages.append(message)
+                else:
+                    failures.append(message)
             else:
                 messages.append(
                     f"Generated repo: {context.generated_dir.relative_to(context.root).as_posix()}"
@@ -1540,6 +1590,7 @@ def render_single_module(
         module,
         root=context.root,
         allow_missing_replay=model_client is not None,
+        allow_missing_generated_metadata=force,
     )
     if health_status != 0:
         return health_status, health_output

@@ -23,6 +23,7 @@ from mint_cli.renderer import (
     get_renderer,
     validate_patch,
 )
+from mint_cli.hashing import hash_text
 from mint_cli.renderer.base import RenderRequest
 
 
@@ -472,8 +473,73 @@ def test_replay_client_fails_loudly_when_prompt_changes(tmp_path):
 
     replay = ReplayClient(cassette_dir=tmp_path, model="claude-test", prompt_version="pv1")
 
-    with pytest.raises(MintError, match="prompt content changed.*MINT_LIVE=1"):
+    with pytest.raises(MintError) as exc:
         replay.complete(system="system text", prompt="new prompt", request=request)
+
+    message = str(exc.value)
+    assert "prompt content changed" in message
+    assert "Spec or prompt edits require live recording" in message
+    assert "MINT_LIVE=1 mint render taskstore" in message
+    assert "MINT_LIVE=1 mint live-smoke taskstore" in message
+
+
+def test_replay_client_accepts_equivalent_prompt_when_key_drifted(tmp_path):
+    request = make_request()
+    cassette_dir = tmp_path / "v1"
+    cassette_dir.mkdir(parents=True)
+
+    stale_id = "0" * 64
+    (cassette_dir / f"{stale_id}.json").write_text(
+        json.dumps(
+            {
+                "cassetteVersion": 1,
+                "id": stale_id,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "model": "claude-test",
+                "promptVersion": "pv1",
+                "request": {
+                    "module": "taskstore",
+                    "unit": "FR1",
+                    "phase": "unit",
+                    "attempt": 1,
+                    "promptHash": hash_text("old prompt"),
+                },
+                "system": "system text",
+                "prompt": "old prompt",
+                "response": "old response",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    equivalent_id = "1" * 64
+    (cassette_dir / f"{equivalent_id}.json").write_text(
+        json.dumps(
+            {
+                "cassetteVersion": 1,
+                "id": equivalent_id,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "model": "claude-test",
+                "promptVersion": "pv1",
+                "request": {
+                    "module": "taskstore",
+                    "unit": "FR1",
+                    "phase": "unit",
+                    "attempt": 1,
+                    "promptHash": hash_text("new prompt"),
+                },
+                "system": "system text",
+                "prompt": "new prompt",
+                "response": "new response",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    replay = ReplayClient(cassette_dir=tmp_path, model="claude-test", prompt_version="pv1")
+
+    assert replay.complete(system="system text", prompt="new prompt", request=request) == "new response"
 
 
 def test_replay_client_fails_loudly_when_model_changes(tmp_path):

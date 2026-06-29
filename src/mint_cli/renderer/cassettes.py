@@ -117,6 +117,7 @@ class ReplayClient:
         )
         path = cassette_path(self._cassette_dir, cassette_hash)
         validation_hash = cassette_hash
+        data: dict[str, Any] | None = None
         if not path.exists():
             legacy_hash = cassette_id(
                 prompt_version=self._prompt_version,
@@ -128,6 +129,12 @@ class ReplayClient:
                 path = legacy_path
                 validation_hash = legacy_hash
         if not path.exists():
+            equivalent = self._find_equivalent(system, prompt, request)
+            if equivalent is not None:
+                path = Path(str(equivalent["_path"]))
+                validation_hash = str(equivalent["id"])
+                data = equivalent
+        if not path.exists():
             related = self._find_related(request)
             if related is not None:
                 self._raise_related_mismatch(related, request, prompt)
@@ -137,7 +144,8 @@ class ReplayClient:
                 f"Fix: {_rerecord_hint(request.module)}"
             )
 
-        data = _load_cassette(path)
+        if data is None:
+            data = _load_cassette(path)
         self._validate(
             data,
             path=path,
@@ -168,6 +176,32 @@ class ReplayClient:
             ):
                 data["_path"] = path.as_posix()
                 return data
+        return None
+
+    def _find_equivalent(
+        self,
+        system: str,
+        prompt: str,
+        request: RenderRequest,
+    ) -> dict[str, Any] | None:
+        expected_request = _request_metadata(request, prompt)
+        for path in sorted((self._cassette_dir / f"v{CASSETTE_VERSION}").glob("*.json")):
+            try:
+                data = _load_cassette(path)
+            except MintError:
+                continue
+            if not isinstance(data.get("id"), str):
+                continue
+            if data.get("model") != self._model:
+                continue
+            if data.get("promptVersion") != self._prompt_version:
+                continue
+            if data.get("system") != system or data.get("prompt") != prompt:
+                continue
+            if data.get("request") != expected_request:
+                continue
+            data["_path"] = path.as_posix()
+            return data
         return None
 
     def _raise_related_mismatch(
@@ -294,4 +328,8 @@ def _request_label(request: RenderRequest) -> str:
 
 
 def _rerecord_hint(module: str) -> str:
-    return f"Re-record with: MINT_LIVE=1 mint live-smoke {module}."
+    return (
+        "Spec or prompt edits require live recording before offline render can replay. "
+        f"Next: MINT_LIVE=1 mint render {module} to live-record the current render plan, "
+        f"or MINT_LIVE=1 mint live-smoke {module} to force a full re-record."
+    )

@@ -38,6 +38,10 @@ def test_init_project_write_scaffolds_project(tmp_path):
         assert (tmp_path / rel).is_dir()
     for rel in ["resources/.gitkeep", ".mint/generated/.gitkeep", "conformance/.gitkeep"]:
         assert (tmp_path / rel).is_file()
+    gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert ".mint/generated/*" in gitignore
+    assert "!.mint/generated/.gitkeep" in gitignore
+    assert "conformance/*" in gitignore
     assert (tmp_path / ".mint" / "specs" / "example.mint.md").is_file()
     config = workflow.load_config(tmp_path / "mint.yaml")
     assert config.default_stack == "python-cli"
@@ -75,6 +79,10 @@ def test_init_project_write_uses_existing_configured_output_dirs(tmp_path):
     assert (tmp_path / "mint-generated").is_dir()
     assert (tmp_path / "mint-generated" / ".gitkeep").is_file()
     assert (tmp_path / "mint-conformance").is_dir()
+    gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "mint-generated/*" in gitignore
+    assert "!mint-generated/.gitkeep" in gitignore
+    assert "mint-conformance/*" in gitignore
     assert not (tmp_path / "generated").exists()
 
 
@@ -95,6 +103,8 @@ def test_init_project_write_is_idempotent_and_preserves_files(tmp_path):
     assert "Kept existing mint.yaml" in first_output
     assert "Kept existing .mint/specs/example.mint.md" in first_output
     assert "Kept existing test_scripts/run_unit_tests.sh" in second_output
+    gitignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert gitignore.count(".mint/generated/*") == 1
 
 
 def test_render_top_module_renders_requirements_first(demo_project, monkeypatch):
@@ -119,6 +129,33 @@ def test_second_render_is_noop(demo_project, monkeypatch):
     status, output = workflow.render_module("tasklist")
     assert status == 0
     assert "NOOP taskstore" in output and "NOOP tasklist" in output
+
+
+def test_render_existing_generated_dir_without_metadata_requires_force(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    unmanaged = demo_project.root / ".mint" / "generated" / "taskstore"
+    unmanaged.mkdir(parents=True)
+    (unmanaged / "copied.py").write_text("# from another checkout\n", encoding="utf-8")
+
+    status, output = workflow.render_module("taskstore")
+
+    assert status == 1
+    assert "Generated repo is missing metadata" in output
+    assert "Next: mint render taskstore --force" in output
+
+
+def test_render_force_replaces_generated_dir_without_metadata(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    unmanaged = demo_project.root / ".mint" / "generated" / "taskstore"
+    unmanaged.mkdir(parents=True)
+    (unmanaged / "copied.py").write_text("# from another checkout\n", encoding="utf-8")
+
+    status, output = workflow.render_module("taskstore", force=True)
+
+    assert status == 0, output
+    assert "RENDER taskstore" in output
+    assert not (unmanaged / "copied.py").exists()
+    assert demo_project.metadata("taskstore")["lastSuccessfulUnitId"] == "FR2"
 
 
 def test_metadata_records_hashes_attempts_commits(demo_project, monkeypatch):

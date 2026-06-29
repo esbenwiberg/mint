@@ -87,6 +87,27 @@ def test_evaluator_later_unit_edit_replays_only_that_slice(make_project):
     assert after["functionalUnits"][1]["finishedCommit"] != fr2_commit
 
 
+def test_reverting_spec_text_replays_original_cassette(make_project):
+    project = make_calc_graph_project(make_project)
+    assert workflow.render_module("calc-cli", root=project.root)[0] == 0
+
+    spec_path = project.spec_path("evaluator")
+    original = spec_path.read_text(encoding="utf-8")
+    edited = original.replace(
+        "`evaluate(\"missing(1)\")` raises `EvalError` with `unknown name` in the message.",
+        "`evaluate(\"missing(1)\")` raises `EvalError` with `unknown name` in the clean message.",
+    )
+    spec_path.write_text(edited, encoding="utf-8")
+    assert workflow.render_module("evaluator", root=project.root)[0] == 0
+
+    spec_path.write_text(original, encoding="utf-8")
+    status, output = workflow.render_module("evaluator", root=project.root)
+
+    assert status == 0, output
+    assert "functional unit changed: FR2" in output
+    assert "Completed FR2" in output
+
+
 def test_lexer_spec_edit_cascades_through_calc_graph(make_project):
     project = make_calc_graph_project(make_project)
     assert workflow.render_module("calc-cli", root=project.root)[0] == 0

@@ -39,8 +39,11 @@ Each cassette stores:
 - full user prompt
 - raw model response
 
-Replay validates all of those fields. A model, prompt-version, system-prompt, or
-prompt-content mismatch is a hard error with a re-record hint.
+Replay validates all of those fields. If the exact cassette filename key is absent
+but another cassette has the same model, prompt version, system prompt, user prompt,
+and request metadata, Mint treats it as the same replay fixture. A model,
+prompt-version, system-prompt, or prompt-content mismatch is a hard error with a
+re-record hint.
 
 ## Replay mode
 
@@ -53,7 +56,9 @@ mint render calc-cli
 If a cassette is missing or stale, the render fails with a command like:
 
 ```text
-Fix: Re-record with: MINT_LIVE=1 mint live-smoke calc-cli.
+Fix: Spec or prompt edits require live recording before offline render can replay.
+Next: MINT_LIVE=1 mint render calc-cli to live-record the current render plan,
+or MINT_LIVE=1 mint live-smoke calc-cli to force a full re-record.
 ```
 
 This is the mode CI should use: no API key, no network, deterministic responses.
@@ -63,12 +68,16 @@ This is the mode CI should use: no API key, no network, deterministic responses.
 Recording is explicit and environment-gated:
 
 ```bash
+MINT_LIVE=1 mint render calc-cli
 MINT_LIVE=1 mint live-smoke calc-cli
 ```
 
-In this mode `RecordingClient` wraps the selected live client, writes each provider
-response to `resources/cassettes/v1/`, and returns the live response to the render
-loop. Anthropic API providers use `AnthropicModelClient` and require the
+With `MINT_LIVE=1`, `mint render` records only the current incremental render plan.
+`mint live-smoke` is the full forced re-record path and is the safer command when a
+demo needs all cassettes refreshed. In both cases `RecordingClient` wraps the
+selected live client, writes each provider response to `resources/cassettes/v1/`,
+and returns the live response to the render loop. Anthropic API providers use
+`AnthropicModelClient` and require the
 `anthropic` package plus `ANTHROPIC_API_KEY`. CLI providers shell out to `claude`
 or `codex` and use the auth already configured by those tools.
 

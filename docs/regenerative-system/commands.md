@@ -25,12 +25,14 @@ resources/
 .mint/generated/
 conformance/
 test_scripts/
+.gitignore
 ```
 
 It also writes the default generated-code test scripts and makes newly created
-scripts executable. Existing files are kept and reported. The seeded `example`
-module uses a built-in deterministic template, so the first smoke path is fully
-offline:
+scripts executable. The generated and conformance directories are added to
+`.gitignore` with `.gitkeep` exceptions, including custom paths from an existing
+`mint.yaml`. Existing files are kept and reported. The seeded `example` module uses
+a built-in deterministic template, so the first smoke path is fully offline:
 
 ```bash
 mint doctor
@@ -155,7 +157,8 @@ For a fresh local starter spec, healthcheck fails until you either add/select a
 deterministic template or switch the spec to a model provider such as
 `rendererProvider: claude-cli`. For a fresh model spec, healthcheck fails in offline
 mode until replay cassettes exist for that module/model/prompt version. Use
-`MINT_LIVE=1 mint live-smoke <module>` to record the first set.
+`MINT_LIVE=1 mint render <module>` to live-record the current render plan, or
+`MINT_LIVE=1 mint live-smoke <module>` to force-record the full module.
 
 For TypeScript specs, healthcheck checks Node and npm. Package-script validation
 happens at render/test time so a new model patch can create or repair
@@ -186,6 +189,11 @@ mint render taskstore --force        # full re-render regardless of hashes
 `--from` and `--range` are mutually exclusive and apply only to the named module;
 required modules always use their incremental plan.
 
+If the generated directory already exists but has no `.mintgen/module.json` (for
+example, copied output from another checkout), normal render refuses to touch it.
+Run `mint render <module> --force` only when you intentionally want Mint to replace
+that directory.
+
 Successful renders write:
 
 ```text
@@ -213,6 +221,11 @@ MINT_LIVE=1 mint live-smoke calc-cli
 Default CI never runs this command. Use it manually, or through the manual
 `live-record` GitHub Actions workflow, when cassettes need to be refreshed from the
 real provider.
+
+For a spec edit on a model-backed module, ordinary offline `mint render` may fail
+because the prompt text changed and the old cassette is stale. Use
+`MINT_LIVE=1 mint render <module>` when you want to live-record only the incremental
+plan, or `MINT_LIVE=1 mint live-smoke <module>` when the demo needs a full re-record.
 
 ## `mint report <module>`
 
