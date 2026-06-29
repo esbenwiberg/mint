@@ -74,5 +74,6 @@ subprocesses against isolated project directories.
 Python generated-code unit, conformance, and test-quality checks run through
 `PYTHON_BIN`. TypeScript modules use the stack adapter to run Node/npm package
 scripts: `tsc --noEmit`, Vitest unit tests, and Vitest conformance tests. TypeScript
-test-quality is currently recorded as skipped until TS coverage/mutation support
-exists.
+test-quality runs too — Vitest v8 coverage, acceptance traceability, and a
+TypeScript-compiler-API mutation probe — and hard-fails when the required dev tooling
+(`@vitest/coverage-v8`, `typescript`) is not installed.

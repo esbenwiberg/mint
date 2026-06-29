@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -103,21 +104,107 @@ rendererPromptVersion: ts-v1
 """
 
 
+# A Python stand-in for the `node` TypeScript-compiler finder. It mirrors the real
+# finder's contract: read MINT_TS_SRC, emit one JSON record per exported function
+# body span with character offsets just inside the surrounding braces.
+_FINDER_STUB = r"""
+import json, os, re, sys
+from pathlib import Path
+
+src = Path(os.environ["MINT_TS_SRC"])
+pattern = re.compile(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::[^{]+)?{")
+out = []
+for path in sorted(src.rglob("*.ts")):
+    if path.name.endswith(".d.ts"):
+        continue
+    text = path.read_text(encoding="utf-8")
+    for match in pattern.finditer(text):
+        name = match.group(1)
+        if name.startswith("_"):
+            continue
+        brace = match.end() - 1
+        depth, i = 0, brace
+        while i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        out.append(
+            {
+                "file": str(path),
+                "name": name,
+                "bodyStart": brace + 1,
+                "bodyEnd": i,
+                "line": text[:brace].count("\n") + 1,
+            }
+        )
+sys.stdout.write(json.dumps(out))
+"""
+
+
 def install_ts_tool_stubs(root: Path, monkeypatch) -> Path:
     bin_dir = root / "tool-bin"
     bin_dir.mkdir()
     log = root / "ts-tool-log.txt"
-    for name in ["tsc", "vitest"]:
-        path = bin_dir / name
-        path.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            f"printf '%s %s\\n' '{name}' \"$*\" >> {log}\n",
-            encoding="utf-8",
-        )
-        path.chmod(0o755)
+
+    (bin_dir / "tsc").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"printf '%s %s\\n' 'tsc' \"$*\" >> {log}\n",
+        encoding="utf-8",
+    )
+    # The vitest stub emulates the real tooling contract used by the test-quality gate:
+    #   * --coverage writes an istanbul coverage-final.json (full unless MINT_FAKE_FULL_COVERAGE=0)
+    #   * a mutated source body (contains the probe marker) fails the run, so mutations are
+    #     "killed" — unless MINT_FAKE_MUTATION_SURVIVES=1 forces a survivor.
+    (bin_dir / "vitest").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -uo pipefail\n"
+        f"printf '%s %s\\n' 'vitest' \"$*\" >> {log}\n"
+        'if grep -rqs "mint mutation probe" src 2>/dev/null; then\n'
+        '  if [ "${MINT_FAKE_MUTATION_SURVIVES:-0}" = "1" ]; then exit 0; fi\n'
+        '  echo "mutation killed" >&2; exit 1\n'
+        "fi\n"
+        'reports=""\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in --coverage.reportsDirectory=*) reports="${arg#*=}";; esac\n'
+        "done\n"
+        'if [ -n "$reports" ]; then\n'
+        '  mkdir -p "$reports"\n'
+        '  cov="${MINT_FAKE_FULL_COVERAGE:-1}"\n'
+        '  json="{"\n'
+        "  first=1\n"
+        '  while IFS= read -r f; do\n'
+        '    abs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"\n'
+        '    if [ "$cov" = "1" ]; then s=\'{"0":1,"1":1}\'; else s=\'{"0":1,"1":0}\'; fi\n'
+        '    if [ $first -eq 0 ]; then json="$json,"; fi\n'
+        "    first=0\n"
+        '    json="$json\\"$abs\\":{\\"path\\":\\"$abs\\",\\"s\\":$s,\\"statementMap\\":{}}"\n'
+        '  done < <(find src -name "*.ts" ! -name "*.d.ts" 2>/dev/null)\n'
+        '  json="$json}"\n'
+        '  printf "%s" "$json" > "$reports/coverage-final.json"\n'
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "tsc").chmod(0o755)
+    (bin_dir / "vitest").chmod(0o755)
+
+    finder = bin_dir / "ts_finder.py"
+    finder.write_text(_FINDER_STUB, encoding="utf-8")
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("MINT_TS_MUTATION_FINDER_COMMAND", f"{sys.executable} {finder}")
     return log
+
+
+def disable_test_quality(root: Path) -> None:
+    """Switch off the test-quality gate for structural tests that don't exercise it."""
+    config = root / "mint.yaml"
+    text = config.read_text(encoding="utf-8")
+    config.write_text(text.replace("  enabled: true\n", "  enabled: false\n"), encoding="utf-8")
 
 
 def ts_patch(
@@ -218,7 +305,7 @@ def test_typescript_model_render_runs_typecheck_vitest_and_reports(make_project,
     assert client.calls == [("FR1", "unit", 1), ("FR2", "unit", 1)]
     meta = project.metadata("calc-ts")
     assert meta["lastSuccessfulUnitId"] == "FR2"
-    assert all(record["testQuality"]["status"] == "skipped" for record in meta["functionalUnits"])
+    assert all(record["testQuality"]["status"] == "passed" for record in meta["functionalUnits"])
     attempts = project.root / ".mint" / "generated" / "calc-ts" / ".mintgen" / "attempts" / "FR1"
     assert (attempts / "unit-1.patch.json").is_file()
     assert (attempts / "unit-1.stdout.log").is_file()
@@ -241,10 +328,98 @@ def test_typescript_model_render_runs_typecheck_vitest_and_reports(make_project,
     assert f"{json.dumps('calc-ts')}: " in config_text
 
 
+def test_typescript_test_quality_reports_coverage_and_mutation(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec("calc-ts", TS_SPEC)
+    install_ts_tool_stubs(project.root, monkeypatch)
+    monkeypatch.chdir(project.root)
+
+    status, output = workflow.render_module(
+        "calc-ts", model_client=ScriptedModelClient(calc_ts_response)
+    )
+
+    assert status == 0, output
+    fr2 = project.metadata("calc-ts")["functionalUnits"][1]["testQuality"]
+    assert fr2["status"] == "passed"
+    assert fr2["coverage"]["status"] == "passed"
+    assert fr2["coverage"]["percent"] >= 60
+    assert fr2["mutation"]["status"] == "passed"
+    assert fr2["mutation"]["testedCandidates"] >= 1
+    assert all(item["status"] == "passed" for item in fr2["traceability"])
+
+
+def test_typescript_test_quality_fails_on_low_coverage(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec("calc-ts", TS_SPEC)
+    install_ts_tool_stubs(project.root, monkeypatch)
+    monkeypatch.setenv("MINT_FAKE_FULL_COVERAGE", "0")
+    monkeypatch.chdir(project.root)
+
+    status, output = workflow.render_module(
+        "calc-ts", model_client=ScriptedModelClient(calc_ts_response)
+    )
+
+    assert status == 1
+    assert "test-quality gate failed" in output
+    assert "coverage" in output
+    coverage = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]["coverage"]
+    assert coverage["status"] == "failed"
+    assert coverage["percent"] < 60
+
+
+def test_typescript_test_quality_fails_when_mutation_survives(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec("calc-ts", TS_SPEC)
+    install_ts_tool_stubs(project.root, monkeypatch)
+    monkeypatch.setenv("MINT_FAKE_MUTATION_SURVIVES", "1")
+    monkeypatch.chdir(project.root)
+
+    status, output = workflow.render_module(
+        "calc-ts", model_client=ScriptedModelClient(calc_ts_response)
+    )
+
+    assert status == 1
+    assert "test-quality gate failed" in output
+    mutation = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]["mutation"]
+    assert mutation["status"] == "failed"
+    assert mutation["survivors"]
+
+
+def test_typescript_test_quality_hard_fails_without_coverage_tooling(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec("calc-ts", TS_SPEC)
+    log = install_ts_tool_stubs(project.root, monkeypatch)
+    # Replace the vitest stub with one that never emits a coverage report and reports the
+    # missing provider, like real vitest without @vitest/coverage-v8 installed.
+    (project.root / "tool-bin" / "vitest").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -uo pipefail\n"
+        f"printf '%s %s\\n' 'vitest' \"$*\" >> {log}\n"
+        'for arg in "$@"; do\n'
+        '  case "$arg" in --coverage) echo "Cannot find dependency @vitest/coverage-v8" >&2; exit 1;; esac\n'
+        "done\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (project.root / "tool-bin" / "vitest").chmod(0o755)
+    monkeypatch.chdir(project.root)
+
+    status, output = workflow.render_module(
+        "calc-ts", model_client=ScriptedModelClient(calc_ts_response)
+    )
+
+    assert status == 1
+    assert "test-quality gate failed" in output
+    coverage = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]["coverage"]
+    assert coverage["status"] == "failed"
+    assert "@vitest/coverage-v8" in coverage["reason"]
+
+
 def test_typescript_adapter_normalizes_tsconfig_module_resolution(make_project, monkeypatch):
     project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
     project.write_spec("math-core", CORE_SPEC)
     install_ts_tool_stubs(project.root, monkeypatch)
+    disable_test_quality(project.root)
     monkeypatch.chdir(project.root)
 
     def response(request: RenderRequest) -> str:
@@ -276,6 +451,7 @@ def test_typescript_adapter_rewrites_conformance_relative_src_imports(make_proje
     project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
     project.write_spec("math-core", CORE_SPEC)
     install_ts_tool_stubs(project.root, monkeypatch)
+    disable_test_quality(project.root)
     monkeypatch.chdir(project.root)
 
     def response(request: RenderRequest) -> str:
@@ -354,6 +530,7 @@ def test_typescript_required_module_wiring_is_explicit(make_project, monkeypatch
     project.write_spec("math-core", CORE_SPEC)
     project.write_spec("uses-core", USES_CORE_SPEC)
     install_ts_tool_stubs(project.root, monkeypatch)
+    disable_test_quality(project.root)
     monkeypatch.chdir(project.root)
 
     def response(request: RenderRequest) -> str:

@@ -53,9 +53,9 @@ def evaluate_test_quality(
             "mutation": {"status": "skipped", "reason": reason},
         }
 
-    traceability = _trace_acceptance_criteria(context, unit)
-    coverage = _measure_coverage(context, required_src=required_src)
-    mutation = _run_mutation_probe(context, required_src=required_src)
+    traceability = _trace_acceptance_criteria(context, unit, adapter.test_quality_token_files(context))
+    coverage = adapter.measure_coverage(context, required_paths=required_src)
+    mutation = adapter.run_mutation_probe(context, required_paths=required_src)
 
     failures: list[str] = []
     if coverage["status"] == "failed":
@@ -104,8 +104,10 @@ def format_test_quality_verdict(verdict: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _trace_acceptance_criteria(context: Any, unit: Any) -> list[dict[str, Any]]:
-    test_tokens = _test_tokens(context)
+def _trace_acceptance_criteria(
+    context: Any, unit: Any, token_files: list[Path]
+) -> list[dict[str, Any]]:
+    test_tokens = _test_tokens(token_files)
     verdicts: list[dict[str, Any]] = []
     for index, criterion in enumerate(unit.acceptance, start=1):
         tokens = sorted(_criterion_tokens(criterion))
@@ -125,9 +127,9 @@ def _trace_acceptance_criteria(context: Any, unit: Any) -> list[dict[str, Any]]:
     return verdicts
 
 
-def _test_tokens(context: Any) -> set[str]:
+def _test_tokens(token_files: list[Path]) -> set[str]:
     tokens: set[str] = set()
-    for path in _test_files(context):
+    for path in token_files:
         tokens.update(_tokens(path.read_text(encoding="utf-8", errors="ignore")))
     return tokens
 

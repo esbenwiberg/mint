@@ -47,9 +47,10 @@ All code lives under `src/mint_cli/`.
    - Run the stack adapter's **conformance gate** (which also re-runs all prior
      units' conformance tests as regression); on failure, re-render once with
      feedback. TypeScript uses Vitest against `conformance/<module>/`.
-   - Run the **test-quality gate**: Python runs coverage threshold, acceptance
-     traceability, and a lightweight mutation probe. TypeScript records this gate as
-     skipped until TS coverage/mutation support exists.
+   - Run the **test-quality gate**: coverage threshold, acceptance traceability, and a
+     lightweight mutation probe. Python uses an in-process pytest tracer and AST
+     mutation; TypeScript uses Vitest v8 coverage and TypeScript-compiler-API mutation
+     candidate discovery. Each stack-specific check lives behind the stack adapter.
    - Strip runtime caches, update metadata, and commit two checkpoints (code, then
      metadata) to the module's nested git repo.
 

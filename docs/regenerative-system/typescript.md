@@ -70,7 +70,8 @@ Mint owns the test harness details around those files:
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "@vitest/coverage-v8": "^3.0.0"
   }
 }
 ```
@@ -100,10 +101,30 @@ contents with TypeScript code fences, so the model can import public APIs by pac
 name. `requiredModuleCodeHash` remains stack-neutral; edits to a required module's
 generated code still force a full dependent re-render.
 
+## Test-quality gate
+
+TypeScript modules run the same anti-weak-test gate as Python:
+
+- **Coverage** — Vitest's v8 provider (`vitest run … --coverage --coverage.provider=v8
+  --coverage.reporter=json`). Mint parses the istanbul `coverage-final.json`, keeps
+  only statements under the generated `src/`, unions unit and conformance runs, and
+  compares against `testQuality.minCoveragePercent`.
+- **Acceptance traceability** — each functional unit's acceptance bullets must be
+  referenced by tokens in the generated `tests/**/*.ts` and `conformance/**/*.ts`.
+- **Mutation probe** — Mint discovers exported function/method bodies through the
+  TypeScript compiler API (a `node` finder script), replaces a body with a `throw`,
+  reruns the unit and conformance suites, and fails if a mutant survives.
+
+The gate needs the generated package's dev tooling installed: `typescript` and
+`vitest` for the existing gates, plus `@vitest/coverage-v8` for coverage. When that
+tooling is missing the gate **hard-fails with a fix hint** instead of silently
+skipping. Discovery is overridable with `MINT_TS_MUTATION_FINDER_COMMAND` (the command
+reads `MINT_TS_SRC` and writes candidate spans as JSON to stdout).
+
 ## Current limits
 
-- TypeScript test-quality is recorded as `skipped`: coverage, acceptance
-  traceability, and mutation probes are Python-only for now.
+- The mutation probe only mutates block-bodied functions/methods; concise arrow
+  bodies (`=> expr`) are skipped.
 - Mint does not run `npm install` for you. Generated packages must have dependencies
   installed in the environment where their npm scripts run, or the scripts will fail
   with their normal npm/tooling errors.

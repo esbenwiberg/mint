@@ -24,11 +24,18 @@ What this system deliberately does *not* do yet, and where it would bite first.
 - **TypeScript support is library/Node-only.** `typescript-lib` and
   `typescript-node` use npm-compatible scripts, `tsc --noEmit`, and Vitest, but
   there are no browser UI, React/Vue/Svelte, or bundler-specific stacks yet.
-- **TypeScript test-quality is skipped.** TS unit and conformance gates run, but
-  coverage, acceptance traceability, and mutation probes are still Python-only.
+- **TypeScript test-quality is enforced, but only over block-bodied functions.**
+  Coverage (Vitest v8), acceptance traceability, and the mutation probe all run for
+  `typescript-lib`/`typescript-node`. The mutation probe mutates exported
+  function/method bodies discovered through the TypeScript compiler API; concise
+  arrow bodies (`=> expr`) are not yet mutated.
 - **Mint does not install npm dependencies.** Generated TypeScript packages declare
   scripts and dependencies; the environment must have/install the package tooling
-  before those scripts can pass.
+  before those scripts can pass. The test-quality gate additionally needs
+  `@vitest/coverage-v8` (coverage) and `typescript` (mutation candidate discovery)
+  installed — when either is missing the gate hard-fails with a fix hint rather than
+  silently skipping. Override mutation discovery with `MINT_TS_MUTATION_FINDER_COMMAND`
+  (reads `MINT_TS_SRC`, writes candidate spans as JSON to stdout).
 - **YAML subset.** `config.py` parses a small YAML subset (scalars, nested maps,
   inline `[a, b]` lists). Block-list syntax and anchors are unsupported.
 - **Conformance regression is "run everything."** Prior units' conformance tests run

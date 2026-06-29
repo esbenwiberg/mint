@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,22 @@ class StackAdapter(Protocol):
         ...
 
     def cleanup_runtime_caches(self, *roots: Path) -> None:
+        ...
+
+    def test_quality_token_files(self, context: Any) -> list[Path]:
+        """Files whose text feeds acceptance-traceability tokens."""
+        ...
+
+    def measure_coverage(
+        self, context: Any, *, required_paths: list[Path]
+    ) -> dict[str, Any]:
+        """Measure generated-source coverage for the test-quality gate."""
+        ...
+
+    def run_mutation_probe(
+        self, context: Any, *, required_paths: list[Path]
+    ) -> dict[str, Any]:
+        """Mutate generated source and confirm the tests catch it."""
         ...
 
 
@@ -148,6 +165,25 @@ class PythonStackAdapter:
         for root in roots:
             _remove_python_caches(root)
 
+    def test_quality_token_files(self, context: Any) -> list[Path]:
+        from .test_quality import _test_files
+
+        return _test_files(context)
+
+    def measure_coverage(
+        self, context: Any, *, required_paths: list[Path]
+    ) -> dict[str, Any]:
+        from .test_quality import _measure_coverage
+
+        return _measure_coverage(context, required_src=required_paths)
+
+    def run_mutation_probe(
+        self, context: Any, *, required_paths: list[Path]
+    ) -> dict[str, Any]:
+        from .test_quality import _run_mutation_probe
+
+        return _run_mutation_probe(context, required_src=required_paths)
+
     def script_env(self, context: Any, required_paths: list[Path]) -> dict[str, str]:
         env = os.environ.copy()
         env["MINT_GENERATED_DIR"] = str(context.generated_dir)
@@ -164,7 +200,7 @@ class TypeScriptStackAdapter:
     name = "typescript"
     stack_names = ("typescript-lib", "typescript-node")
     code_fence_language = "typescript"
-    supports_test_quality = False
+    supports_test_quality = True
     prepare_command_label = "node --version && npm --version"
     unit_command_label = "npm run typecheck && npm run test:unit"
     conformance_command_label = "npm run test:conformance"
@@ -281,6 +317,8 @@ class TypeScriptStackAdapter:
             "Mint will normalize tsconfig moduleResolution to Bundler before tests run.",
             "package.json must include scripts: typecheck = `tsc --noEmit`, "
             "test:unit = `vitest run tests`, and test:conformance = `vitest run`.",
+            "package.json devDependencies must include typescript, vitest, and "
+            "@vitest/coverage-v8 so the test-quality coverage and mutation gates can run.",
             "Use Vitest for generated unit tests and conformance tests.",
             "Do not write vitest.conformance.config.ts; Mint owns that harness file.",
             "Conformance files must be written with root `conformance` under FRn/.",
@@ -504,6 +542,277 @@ class TypeScriptStackAdapter:
                 )
         return failures
 
+    # ---- test-quality (coverage + mutation) -------------------------------- #
+
+    def test_quality_token_files(self, context: Any) -> list[Path]:
+        files: list[Path] = []
+        for root in [context.generated_dir / "tests", context.conformance_dir]:
+            if root.exists():
+                files.extend(sorted(root.rglob("*.ts")))
+        return files
+
+    def measure_coverage(
+        self, context: Any, *, required_paths: list[Path]
+    ) -> dict[str, Any]:
+        threshold = context.config.test_quality.min_coverage_percent
+        required_order = tuple(path.name for path in required_paths)
+        self.wire_required_modules(context, required_order)
+        self.prepare_typecheck_harness(context)
+        src_dir = context.generated_dir / "src"
+        reports_root = context.generated_dir / ".mint-coverage"
+        shutil.rmtree(reports_root, ignore_errors=True)
+        self.cleanup_runtime_caches(context.generated_dir)
+
+        package_name = _typescript_package_name(context.generated_dir) or context.module
+        config_path = self.write_conformance_vitest_config(context, package_name)
+        self.rewrite_conformance_src_imports(context, context.module)
+
+        # Coverage `include` globs are matched relative to each run's Vitest root: the
+        # unit run roots at the generated dir, the conformance run roots at the repo
+        # root (see write_conformance_vitest_config), so the src glob differs.
+        conformance_src_glob = (
+            os.path.relpath(src_dir, context.root).replace(os.sep, "/") + "/**"
+        )
+        targets: list[tuple[str, tuple[str, ...]]] = [
+            ("unit", ("--coverage.include=src/**",)),
+            (
+                "conformance",
+                (
+                    "--config",
+                    str(config_path),
+                    str(context.conformance_dir),
+                    f"--coverage.include={conformance_src_glob}",
+                ),
+            ),
+        ]
+        covered: dict[str, set[str]] = {}
+        totals: dict[str, int] = {}
+        try:
+            for target, extra in targets:
+                report_dir = reports_root / target
+                script = "test:unit" if target == "unit" else "test:conformance"
+                result = self._run_npm_script(
+                    context,
+                    script,
+                    *extra,
+                    *_TS_COVERAGE_FLAGS,
+                    f"--coverage.reportsDirectory={report_dir}",
+                    required_order=required_order,
+                )
+                report_path = report_dir / "coverage-final.json"
+                if not report_path.exists():
+                    text = (result.stdout + "\n" + result.stderr).lower()
+                    if any(token in text for token in _TS_COVERAGE_MISSING_TOKENS):
+                        return {
+                            "status": "failed",
+                            "reason": (
+                                "coverage tooling missing: install the '@vitest/coverage-v8' "
+                                "devDependency in the generated package before rendering"
+                            ),
+                            "threshold": threshold,
+                            "percent": 0.0,
+                            "coveredLines": 0,
+                            "totalLines": 0,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                        }
+                    return {
+                        "status": "failed",
+                        "reason": f"coverage run failed for {target} tests",
+                        "threshold": threshold,
+                        "percent": 0.0,
+                        "coveredLines": 0,
+                        "totalLines": 0,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                    }
+                for rel, (hit, total) in _collect_istanbul_coverage(report_path, src_dir).items():
+                    totals[rel] = total
+                    covered.setdefault(rel, set()).update(hit)
+        finally:
+            shutil.rmtree(reports_root, ignore_errors=True)
+            self.cleanup_runtime_caches(context.generated_dir)
+
+        files = [
+            {
+                "path": rel,
+                "coveredLines": len(covered.get(rel, set())),
+                "totalLines": total,
+                "percent": (len(covered.get(rel, set())) / total * 100.0) if total else 100.0,
+            }
+            for rel, total in sorted(totals.items())
+        ]
+        covered_total = sum(item["coveredLines"] for item in files)
+        line_total = sum(item["totalLines"] for item in files)
+        percent = (covered_total / line_total * 100.0) if line_total else 100.0
+        verdict: dict[str, Any] = {
+            "status": "passed" if percent >= threshold else "failed",
+            "threshold": threshold,
+            "percent": percent,
+            "coveredLines": covered_total,
+            "totalLines": line_total,
+            "files": files,
+        }
+        if verdict["status"] == "failed":
+            verdict["reason"] = f"coverage {percent:.1f}% is below threshold {threshold}%"
+        return verdict
+
+    def run_mutation_probe(
+        self, context: Any, *, required_paths: list[Path]
+    ) -> dict[str, Any]:
+        config = context.config.test_quality
+        if not config.mutation_probe:
+            return {"status": "skipped", "reason": "mutationProbe is false"}
+
+        required_order = tuple(path.name for path in required_paths)
+        self.wire_required_modules(context, required_order)
+        self.prepare_typecheck_harness(context)
+        package_name = _typescript_package_name(context.generated_dir) or context.module
+        config_path = self.write_conformance_vitest_config(context, package_name)
+        self.rewrite_conformance_src_imports(context, context.module)
+
+        baseline = self._ts_run_tests(context, required_order, config_path)
+        if not baseline["ok"]:
+            return {
+                "status": "failed",
+                "reason": "mutation baseline test run failed: " + baseline["reason"],
+                "candidateCount": 0,
+                "testedCandidates": 0,
+                "survivors": [],
+                "baseline": baseline["detail"],
+            }
+
+        candidates = self._ts_mutation_candidates(context)
+        if candidates is None:
+            return {
+                "status": "failed",
+                "reason": (
+                    "mutation tooling missing: install the 'typescript' devDependency so the "
+                    "TypeScript compiler can locate mutation candidates "
+                    "(override discovery with MINT_TS_MUTATION_FINDER_COMMAND)"
+                ),
+                "candidateCount": 0,
+                "testedCandidates": 0,
+                "survivors": [],
+            }
+
+        tested = candidates[: config.mutation_max_candidates]
+        survivors: list[dict[str, Any]] = []
+        for candidate in tested:
+            if not self._ts_mutate_and_test(context, candidate, required_order, config_path):
+                survivors.append(
+                    {"path": candidate["rel"], "name": candidate["name"], "line": candidate["line"]}
+                )
+                break
+
+        if survivors:
+            return {
+                "status": "failed",
+                "reason": "tests still passed after mutating generated implementation",
+                "candidateCount": len(candidates),
+                "testedCandidates": len(tested),
+                "survivors": survivors,
+            }
+        return {
+            "status": "passed" if tested else "skipped",
+            "reason": "" if tested else "no public function candidates found",
+            "candidateCount": len(candidates),
+            "testedCandidates": len(tested),
+            "survivors": [],
+        }
+
+    def _ts_run_tests(
+        self, context: Any, required_order: tuple[str, ...], config_path: Path
+    ) -> dict[str, Any]:
+        unit = self._run_npm_script(context, "test:unit", required_order=required_order)
+        conf = self._run_npm_script(
+            context,
+            "test:conformance",
+            "--config",
+            str(config_path),
+            str(context.conformance_dir),
+            required_order=required_order,
+        )
+        reasons: list[str] = []
+        if unit.returncode != 0:
+            reasons.append(f"unit tests exited {unit.returncode}")
+        if conf.returncode != 0:
+            reasons.append(f"conformance tests exited {conf.returncode}")
+        return {
+            "ok": not reasons,
+            "reason": ", ".join(reasons),
+            "detail": {
+                "unit": {"exitCode": unit.returncode, "stdout": unit.stdout, "stderr": unit.stderr},
+                "conformance": {
+                    "exitCode": conf.returncode,
+                    "stdout": conf.stdout,
+                    "stderr": conf.stderr,
+                },
+            },
+        }
+
+    def _ts_mutation_candidates(self, context: Any) -> list[dict[str, Any]] | None:
+        src_dir = context.generated_dir / "src"
+        if not src_dir.exists():
+            return []
+        override = os.environ.get("MINT_TS_MUTATION_FINDER_COMMAND")
+        command = shlex.split(override) if override else ["node", "-e", _TS_MUTATION_FINDER]
+        env = os.environ.copy()
+        env["MINT_TS_SRC"] = str(src_dir)
+        result = subprocess.run(
+            command,
+            cwd=context.generated_dir,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            return None
+        try:
+            raw = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(raw, list):
+            return None
+        candidates: list[dict[str, Any]] = []
+        for item in raw:
+            try:
+                file_path = Path(item["file"]).resolve()
+                rel = file_path.relative_to(src_dir.resolve()).as_posix()
+            except (KeyError, TypeError, ValueError, OSError):
+                continue
+            candidates.append(
+                {
+                    "file": str(file_path),
+                    "rel": rel,
+                    "name": str(item.get("name", rel)),
+                    "bodyStart": int(item["bodyStart"]),
+                    "bodyEnd": int(item["bodyEnd"]),
+                    "line": int(item.get("line", 0)),
+                }
+            )
+        return sorted(candidates, key=lambda item: (item["rel"], item["bodyStart"], item["name"]))
+
+    def _ts_mutate_and_test(
+        self,
+        context: Any,
+        candidate: dict[str, Any],
+        required_order: tuple[str, ...],
+        config_path: Path,
+    ) -> bool:
+        path = Path(candidate["file"])
+        original = path.read_text(encoding="utf-8")
+        try:
+            path.write_text(_ts_mutated_source(original, candidate), encoding="utf-8")
+            self.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
+            result = self._ts_run_tests(context, required_order, config_path)
+            return not result["ok"]
+        finally:
+            path.write_text(original, encoding="utf-8")
+            self.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
+
 
 _PYTHON = PythonStackAdapter()
 _TYPESCRIPT = TypeScriptStackAdapter()
@@ -586,3 +895,107 @@ def _remove_python_caches(root: Path) -> None:
         shutil.rmtree(cache_dir, ignore_errors=True)
     for pyc in root.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
+
+
+_TS_COVERAGE_FLAGS = (
+    "--coverage",
+    "--coverage.provider=v8",
+    "--coverage.reporter=json",
+    "--coverage.all=true",
+)
+
+# Substrings vitest emits when the v8 coverage provider package is not installed.
+_TS_COVERAGE_MISSING_TOKENS = (
+    "@vitest/coverage",
+    "coverage-v8",
+    "coverage provider",
+)
+
+
+def _collect_istanbul_coverage(
+    report_path: Path, src_dir: Path
+) -> dict[str, tuple[set[str], int]]:
+    """Map src-relative file -> (covered statement ids, total statements)."""
+    try:
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    src_resolved = src_dir.resolve()
+    result: dict[str, tuple[set[str], int]] = {}
+    for abspath, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            rel = Path(abspath).resolve().relative_to(src_resolved).as_posix()
+        except (ValueError, OSError):
+            continue
+        statements = entry.get("s")
+        if not isinstance(statements, dict):
+            continue
+        covered = {key for key, count in statements.items() if isinstance(count, int) and count > 0}
+        result[rel] = (covered, len(statements))
+    return result
+
+
+def _ts_mutated_source(source: str, candidate: dict[str, Any]) -> str:
+    start = candidate["bodyStart"]
+    end = candidate["bodyEnd"]
+    throw = f'\nthrow new Error("mint mutation probe: {candidate["name"]}");\n'
+    return source[:start] + throw + source[end:]
+
+
+# Emits one JSON record per mutatable exported function/method body span.
+# bodyStart/bodyEnd are character offsets just inside the surrounding `{` / `}`.
+_TS_MUTATION_FINDER = r"""
+const ts = require('typescript');
+const fs = require('fs');
+const path = require('path');
+const srcDir = process.env.MINT_TS_SRC;
+const out = [];
+function exported(node) {
+  const mods = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+  return !!(mods && mods.some(m => m.kind === ts.SyntaxKind.ExportKeyword));
+}
+function record(name, body, file, sf) {
+  if (!body || !ts.isBlock(body)) return;
+  const start = body.getStart(sf) + 1;
+  const end = body.getEnd() - 1;
+  if (end <= start) return;
+  const line = sf.getLineAndCharacterOfPosition(body.getStart(sf)).line + 1;
+  out.push({ file, name, bodyStart: start, bodyEnd: end, line });
+}
+function scan(file) {
+  const text = fs.readFileSync(file, 'utf8');
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  sf.forEachChild(node => {
+    if (ts.isFunctionDeclaration(node) && node.name && exported(node) && !node.name.text.startsWith('_')) {
+      record(node.name.text, node.body, file, sf);
+    } else if (ts.isVariableStatement(node) && exported(node)) {
+      node.declarationList.declarations.forEach(d => {
+        const nm = d.name && d.name.getText(sf);
+        if (nm && !nm.startsWith('_') && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) {
+          record(nm, d.initializer.body, file, sf);
+        }
+      });
+    } else if (ts.isClassDeclaration(node) && exported(node) && node.name) {
+      node.members.forEach(m => {
+        if (ts.isMethodDeclaration(m) && m.name) {
+          const nm = m.name.getText(sf);
+          if (!nm.startsWith('_')) record(node.name.text + '.' + nm, m.body, file, sf);
+        }
+      });
+    }
+  });
+}
+function walk(dir) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walk(p);
+    else if (/\.tsx?$/.test(e.name) && !e.name.endsWith('.d.ts')) scan(p);
+  }
+}
+walk(srcDir);
+process.stdout.write(JSON.stringify(out));
+"""
