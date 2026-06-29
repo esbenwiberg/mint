@@ -67,11 +67,11 @@ def test_cli_e2e_offline_render_lifecycle(demo_project) -> None:
     assert rendered.stdout.index("RENDER taskstore") < rendered.stdout.index("RENDER tasklist")
     assert "Completed FR2" in rendered.stdout
 
-    metadata_path = root / "generated" / "tasklist" / ".mintgen" / "module.json"
+    metadata_path = root / ".mint" / "generated" / "tasklist" / ".mintgen" / "module.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["lastSuccessfulUnitId"] == "FR2"
     assert all(record["testQuality"]["status"] == "passed" for record in metadata["functionalUnits"])
-    assert (root / "generated" / "tasklist" / ".git").is_dir()
+    assert (root / ".mint" / "generated" / "tasklist" / ".git").is_dir()
 
     noop = run_mint(root, "render", "tasklist")
     assert noop.returncode == 0, noop.stdout + noop.stderr
@@ -85,7 +85,7 @@ def test_cli_e2e_offline_render_lifecycle(demo_project) -> None:
     report = run_mint(root, "report", "tasklist")
     assert report.returncode == 0, report.stdout + report.stderr
     assert "RUN REPORT tasklist" in report.stdout
-    assert "Report JSON: generated/tasklist/.mintgen/reports/latest.json" in report.stdout
+    assert "Report JSON: .mint/generated/tasklist/.mintgen/reports/latest.json" in report.stdout
 
     inspect = run_mint(root, "inspect", "tasklist", "FR1")
     assert inspect.returncode == 0, inspect.stdout + inspect.stderr
@@ -94,7 +94,7 @@ def test_cli_e2e_offline_render_lifecycle(demo_project) -> None:
 
     cleaned = run_mint(root, "clean", "tasklist", "--yes")
     assert cleaned.returncode == 0, cleaned.stdout + cleaned.stderr
-    assert not (root / "generated" / "tasklist").exists()
+    assert not (root / ".mint" / "generated" / "tasklist").exists()
 
 
 @pytest.mark.e2e

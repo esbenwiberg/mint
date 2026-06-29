@@ -55,6 +55,7 @@ runtime code, plus shared definitions). That overlap is allowed.
 ## Each module is its own repo
 
 Every generated module is an independent nested git repository under
-`generated/<module>/`, with its own history and its own `.mintgen/module.json`. The
-outer repo `.gitignore`s `generated/*` and `conformance/*`. Re-rendering a slice
-uses that nested history to roll back precisely (`git reset --hard <beforeCommit>`).
+the configured `generatedDir` (`.mint/generated/<module>/` by default), with its
+own history and its own `.mintgen/module.json`. The outer repo `.gitignore`s the
+default generated output and `conformance/*`. Re-rendering a slice uses that
+nested history to roll back precisely (`git reset --hard <beforeCommit>`).

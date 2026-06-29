@@ -26,7 +26,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["generated", "conformance", ".git", ".mintgen"]
+norecursedirs = [".mint/generated", "generated", "conformance", ".git", ".mintgen"]
 markers = [
   "e2e: end-to-end tests that drive the CLI in subprocesses",
 ]

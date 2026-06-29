@@ -84,7 +84,7 @@ module in the test suite.
                                                 Renderer adapter (local | model)
                                                                 │  file patch (JSON)
                                                                 ▼
-                                    apply_patch ──▶ generated/<m>/ + conformance/<m>/
+                                    apply_patch ──▶ .mint/generated/<m>/ + conformance/<m>/
                                                                 │
                                    stack unit + conformance + test-quality gates
                                                                 │ pass

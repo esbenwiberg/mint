@@ -11,5 +11,6 @@ Durable changes belong in:
 - `src/mint_cli/`
 - renderer prompts/tools once they exist
 
-Do not patch files under `generated/<module>/` by hand. Inspect generated code
-as evidence, then fix the spec, resources, config, scripts, or renderer.
+Do not patch files under the configured generated output directory
+(`.mint/generated/<module>/` by default) by hand. Inspect generated code as
+evidence, then fix the spec, resources, config, scripts, or renderer.

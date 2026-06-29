@@ -22,7 +22,7 @@ files:
 mint.yaml
 .mint/specs/example.mint.md
 resources/
-generated/
+.mint/generated/
 conformance/
 test_scripts/
 ```
@@ -189,8 +189,8 @@ required modules always use their incremental plan.
 Successful renders write:
 
 ```text
-generated/<module>/.mintgen/reports/latest.json
-generated/<module>/.mintgen/reports/latest.txt
+.mint/generated/<module>/.mintgen/reports/latest.json
+.mint/generated/<module>/.mintgen/reports/latest.txt
 ```
 
 The JSON report contains per-unit attempts, classifications, wall-clock seconds,
@@ -198,7 +198,7 @@ estimated prompt/response tokens, cost estimate, cassette ids, and test-quality
 verdicts.
 
 If `limits.maxRenderAttempts` or `limits.maxRenderTokensEstimate` is exceeded, the
-render aborts and writes `generated/<module>/.mintgen/reports/budget-abort.json`.
+render aborts and writes `.mint/generated/<module>/.mintgen/reports/budget-abort.json`.
 
 ## `mint live-smoke <module>`
 
@@ -292,7 +292,7 @@ The specs live at `.mint/specs/lexer.mint.md`, `.mint/specs/parser.mint.md`,
 ## Self-hosting proof
 
 `.mint/specs/mint-hashing.mint.md` renders a model-backed implementation of the hashing
-helpers into `generated/mint-hashing/`. The test suite compares that generated
+helpers into `.mint/generated/mint-hashing/`. The test suite compares that generated
 package against the handwritten `mint_cli.hashing` behavior.
 
 ```bash

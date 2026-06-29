@@ -20,7 +20,7 @@ if str(SRC) not in sys.path:
 DEFAULT_CONFIG = """version: 1
 defaultStack: python-cli
 specsDir: .mint/specs
-generatedDir: generated
+generatedDir: .mint/generated
 conformanceDir: conformance
 scripts:
   unit: test_scripts/run_unit_tests.sh
@@ -61,7 +61,7 @@ class Project:
     def metadata(self, module: str) -> dict:
         import json
 
-        path = self.root / "generated" / module / ".mintgen" / "module.json"
+        path = self.root / ".mint" / "generated" / module / ".mintgen" / "module.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
 

@@ -1,7 +1,7 @@
 version: 1
 defaultStack: python-cli
 specsDir: .mint/specs
-generatedDir: generated
+generatedDir: .mint/generated
 conformanceDir: conformance
 scripts:
   unit: test_scripts/run_unit_tests.sh

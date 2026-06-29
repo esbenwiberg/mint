@@ -274,7 +274,7 @@ class TypeScriptStackAdapter:
             "test:unit = `vitest run tests`, and test:conformance = `vitest run`.",
             "Use Vitest for generated unit tests and conformance tests.",
             "Conformance files must be written with root `conformance` under FRn/.",
-            "Do not write outside generated/<module>/ or conformance/<module>/.",
+            "Do not write outside the generated module patch root or conformance patch root.",
         ]
         if required_order:
             deps = ", ".join(required_order)

@@ -33,16 +33,17 @@ fix hint used by Python model specs.
 
 ## Generated package contract
 
-The renderer prompt tells the model to keep all generated files inside
-`generated/<module>/` and conformance tests inside `conformance/<module>/`.
+The renderer prompt tells the model to keep all generated files inside the
+configured generated module root (`.mint/generated/<module>/` by default) and
+conformance tests inside `conformance/<module>/`.
 
 For `typescript-lib`, model patches should write:
 
 ```text
-generated/<module>/package.json
-generated/<module>/tsconfig.json
-generated/<module>/src/**/*.ts
-generated/<module>/tests/**/*.test.ts
+.mint/generated/<module>/package.json
+.mint/generated/<module>/tsconfig.json
+.mint/generated/<module>/src/**/*.ts
+.mint/generated/<module>/tests/**/*.test.ts
 conformance/<module>/FRn/**/*.test.ts
 ```
 

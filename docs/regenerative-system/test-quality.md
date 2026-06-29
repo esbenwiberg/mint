@@ -15,7 +15,8 @@ manifest and `module.json`.
 
 For Python stacks, `mint` runs the generated unit tests and conformance tests under
 a line tracer in separate subprocesses, then merges covered line numbers for files
-under `generated/<module>/src/`.
+under the generated module `src/` directory (`.mint/generated/<module>/src/` by
+default).
 
 Generated provenance files are excluded. The default threshold is 60 percent.
 
@@ -66,7 +67,7 @@ that skipped verdict is recorded.
 Attempt manifest:
 
 ```text
-generated/<module>/.mintgen/attempts/<unit>/test-quality-1.json
+.mint/generated/<module>/.mintgen/attempts/<unit>/test-quality-1.json
 ```
 
 The manifest stores `classification` (`passed` or `test_quality_failed`) and a

@@ -50,8 +50,9 @@ Everything known about the unit at render time:
 ```
 
 - `action` ∈ `{write, delete}`; `write` requires `contents`.
-- `root` ∈ `{module, conformance}` (default `module`). `module` targets
-  `generated/<module>/`; `conformance` targets `conformance/<module>/`.
+- `root` ∈ `{module, conformance}` (default `module`). `module` targets the
+  configured generated module directory (`.mint/generated/<module>/` by default);
+  `conformance` targets `conformance/<module>/`.
 - `path` must be **relative** and may not contain `..`. `validate_patch` rejects
   absolute paths and parent-escapes; `apply_patch` re-checks the resolved path stays
   inside its root (defense in depth against symlink tricks).

@@ -88,7 +88,7 @@ response to stdout.
 Every model render attempt records its cassette id in:
 
 ```text
-generated/<module>/.mintgen/attempts/<unit>/<phase>-<attempt>.json
+.mint/generated/<module>/.mintgen/attempts/<unit>/<phase>-<attempt>.json
 ```
 
 `mint report <module>` includes those ids so an offline run can be tied back to the

@@ -6,6 +6,10 @@ from typing import Any
 
 from .errors import MintError
 
+DEFAULT_SPECS_DIR = ".mint/specs"
+DEFAULT_GENERATED_DIR = ".mint/generated"
+DEFAULT_CONFORMANCE_DIR = "conformance"
+
 
 @dataclass(frozen=True)
 class ScriptConfig:
@@ -67,9 +71,13 @@ def load_config(path: Path) -> MintConfig:
         renderer = _mapping(raw["renderer"], "renderer", path)
         limits = _mapping(raw["limits"], "limits", path)
         test_quality_raw = _mapping(raw.get("testQuality", {}), "testQuality", path)
-        specs_dir = validate_project_dir(raw.get("specsDir", ".mint/specs"), "specsDir", path)
-        generated_dir = validate_project_output_dir(raw["generatedDir"], "generatedDir", path)
-        conformance_dir = validate_project_output_dir(raw["conformanceDir"], "conformanceDir", path)
+        specs_dir = validate_project_dir(raw.get("specsDir", DEFAULT_SPECS_DIR), "specsDir", path)
+        generated_dir = validate_project_output_dir(
+            raw.get("generatedDir", DEFAULT_GENERATED_DIR), "generatedDir", path
+        )
+        conformance_dir = validate_project_output_dir(
+            raw.get("conformanceDir", DEFAULT_CONFORMANCE_DIR), "conformanceDir", path
+        )
         if len({specs_dir, generated_dir, conformance_dir}) != 3:
             raise MintError(
                 f"Invalid project directories in {path}: specsDir, generatedDir, "

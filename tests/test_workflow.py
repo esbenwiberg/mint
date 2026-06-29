@@ -34,9 +34,9 @@ def test_init_project_write_scaffolds_project(tmp_path):
     assert "INIT mint project" in output
     assert "First smoke test: mint render example" in output
     assert "New module: choose a module slug and model id" in output
-    for rel in [".mint/specs", "resources", "generated", "conformance", "test_scripts"]:
+    for rel in [".mint/specs", "resources", ".mint/generated", "conformance", "test_scripts"]:
         assert (tmp_path / rel).is_dir()
-    for rel in ["resources/.gitkeep", "generated/.gitkeep", "conformance/.gitkeep"]:
+    for rel in ["resources/.gitkeep", ".mint/generated/.gitkeep", "conformance/.gitkeep"]:
         assert (tmp_path / rel).is_file()
     assert (tmp_path / ".mint" / "specs" / "example.mint.md").is_file()
     config = workflow.load_config(tmp_path / "mint.yaml")
@@ -55,6 +55,27 @@ def test_init_project_write_scaffolds_project(tmp_path):
     assert doctor_status == 0, doctor_output
     health_status, health_output = workflow.healthcheck_module("example", root=tmp_path)
     assert health_status == 0, health_output
+
+
+def test_init_project_write_uses_existing_configured_output_dirs(tmp_path):
+    (tmp_path / "mint.yaml").write_text(
+        workflow.DEFAULT_MINT_YAML.replace(
+            "generatedDir: .mint/generated",
+            "generatedDir: mint-generated",
+        ).replace(
+            "conformanceDir: conformance",
+            "conformanceDir: mint-conformance",
+        ),
+        encoding="utf-8",
+    )
+
+    status, output = workflow.init_project(write=True, root=tmp_path)
+
+    assert status == 0, output
+    assert (tmp_path / "mint-generated").is_dir()
+    assert (tmp_path / "mint-generated" / ".gitkeep").is_file()
+    assert (tmp_path / "mint-conformance").is_dir()
+    assert not (tmp_path / "generated").exists()
 
 
 def test_init_project_write_is_idempotent_and_preserves_files(tmp_path):
@@ -88,7 +109,7 @@ def test_render_top_module_renders_requirements_first(demo_project, monkeypatch)
     for module in ("taskstore", "tasklist"):
         meta = demo_project.metadata(module)
         assert meta["lastSuccessfulUnitId"] == "FR2"
-        assert (demo_project.root / "generated" / module / ".git").is_dir()
+        assert (demo_project.root / ".mint" / "generated" / module / ".git").is_dir()
         assert meta["functionalUnits"][0]["finishedCommit"]
 
 
@@ -119,7 +140,7 @@ def test_metadata_records_hashes_attempts_commits(demo_project, monkeypatch):
     assert fr1["testQuality"]["status"] == "passed"
     quality_attempt = (
         demo_project.root
-        / "generated"
+        / ".mint" / "generated"
         / "tasklist"
         / ".mintgen"
         / "attempts"
@@ -207,7 +228,7 @@ def test_prior_conformance_runs_as_regression(demo_project, monkeypatch):
     # The conformance attempt for FR2 must have collected FR1 + FR2 (regression).
     attempt = (
         demo_project.root
-        / "generated"
+        / ".mint" / "generated"
         / "taskstore"
         / ".mintgen"
         / "attempts"
@@ -215,14 +236,14 @@ def test_prior_conformance_runs_as_regression(demo_project, monkeypatch):
         / "conformance-1.json"
     )
     data = json.loads(attempt.read_text())
-    stdout = (demo_project.root / "generated" / "taskstore" / data["stdoutPath"]).read_text()
+    stdout = (demo_project.root / ".mint" / "generated" / "taskstore" / data["stdoutPath"]).read_text()
     assert "2 passed" in stdout
 
 
 def test_caches_kept_out_of_checkpoint(demo_project, monkeypatch):
     monkeypatch.chdir(demo_project.root)
     workflow.render_module("taskstore")
-    gen = demo_project.root / "generated" / "taskstore"
+    gen = demo_project.root / ".mint" / "generated" / "taskstore"
     assert not list(gen.rglob("__pycache__"))
     assert not list(gen.rglob("*.pyc"))
 
@@ -237,11 +258,11 @@ def test_clean_requires_yes(demo_project, monkeypatch):
     workflow.render_module("taskstore")
     status, output = workflow.clean_module("taskstore", yes=False)
     assert status == 1 and "--yes" in output
-    assert (demo_project.root / "generated" / "taskstore").exists()
+    assert (demo_project.root / ".mint" / "generated" / "taskstore").exists()
 
     status, output = workflow.clean_module("taskstore", yes=True)
     assert status == 0 and "Removed" in output
-    assert not (demo_project.root / "generated" / "taskstore").exists()
+    assert not (demo_project.root / ".mint" / "generated" / "taskstore").exists()
 
 
 def test_inspect_shows_record_and_attempts(demo_project, monkeypatch):
@@ -742,7 +763,7 @@ def test_render_writes_run_report_and_report_command_reads_it(demo_project, monk
     status, output = workflow.render_module("taskstore")
     assert status == 0, output
 
-    report_path = demo_project.root / "generated" / "taskstore" / ".mintgen" / "reports" / "latest.json"
+    report_path = demo_project.root / ".mint" / "generated" / "taskstore" / ".mintgen" / "reports" / "latest.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["module"] == "taskstore"
     assert report["totals"]["attempts"] >= 4
@@ -753,7 +774,7 @@ def test_render_writes_run_report_and_report_command_reads_it(demo_project, monk
     status, output = workflow.report_module("taskstore")
     assert status == 0
     assert "RUN REPORT taskstore" in output
-    assert "Report JSON: generated/taskstore/.mintgen/reports/latest.json" in output
+    assert "Report JSON: .mint/generated/taskstore/.mintgen/reports/latest.json" in output
 
 
 def test_generated_script_env_defaults_to_current_interpreter(make_project):
@@ -778,7 +799,7 @@ def test_generated_script_env_defaults_to_current_interpreter(make_project):
 
 def test_mutation_probe_fails_when_baseline_conformance_script_fails(tmp_path):
     root = tmp_path
-    generated = root / "generated" / "calc"
+    generated = root / ".mint" / "generated" / "calc"
     conformance = root / "conformance" / "calc"
     (generated / "src" / "calc").mkdir(parents=True)
     conformance.mkdir(parents=True)
@@ -998,7 +1019,7 @@ def test_model_renderer_unit_retry_with_feedback(make_calc_project_factory, monk
     assert meta["functionalUnits"][0]["attempts"]["unit"] == 2
     assert meta["model"] == "mock-model"
     # Both attempts left an audit trail.
-    attempts = project.root / "generated" / "calc" / ".mintgen" / "attempts" / "FR1"
+    attempts = project.root / ".mint" / "generated" / "calc" / ".mintgen" / "attempts" / "FR1"
     assert (attempts / "unit-1.prompt.txt").exists()
     assert (attempts / "unit-1.response.txt").exists()
     assert (attempts / "unit-2.patch.json").exists()
@@ -1022,7 +1043,7 @@ def test_model_renderer_patch_validation_retry_with_feedback(make_calc_project_f
     assert status == 0, output
     assert ("FR1", "unit", 1) in client.calls
     assert ("FR1", "unit", 2) in client.calls
-    attempts = project.root / "generated" / "calc" / ".mintgen" / "attempts" / "FR1"
+    attempts = project.root / ".mint" / "generated" / "calc" / ".mintgen" / "attempts" / "FR1"
     first = json.loads((attempts / "unit-1.json").read_text())
     assert first["classification"] == "patch_invalid"
     assert "non-empty 'files'" in first["patchValidationError"]
@@ -1044,7 +1065,7 @@ def test_attempt_budget_aborts_with_report(make_calc_project_factory, monkeypatc
     report = json.loads(
         (
             project.root
-            / "generated"
+            / ".mint" / "generated"
             / "calc"
             / ".mintgen"
             / "reports"
@@ -1069,7 +1090,7 @@ def test_token_budget_aborts_with_report(make_calc_project_factory, monkeypatch)
     report = json.loads(
         (
             project.root
-            / "generated"
+            / ".mint" / "generated"
             / "calc"
             / ".mintgen"
             / "reports"
@@ -1150,7 +1171,7 @@ def test_test_quality_gate_fails_shallow_tests(make_calc_project_factory, monkey
     assert record["testQuality"]["status"] == "failed"
     attempt = (
         project.root
-        / "generated"
+        / ".mint" / "generated"
         / "calc"
         / ".mintgen"
         / "attempts"

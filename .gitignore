@@ -5,6 +5,9 @@ __pycache__/
 .coverage*
 *.egg-info/
 
+.mint/generated/*
+!.mint/generated/.gitkeep
+
 generated/*
 !generated/.gitkeep
 

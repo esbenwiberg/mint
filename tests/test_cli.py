@@ -66,7 +66,7 @@ def test_cli_render_status_inspect_clean_roundtrip(demo_project) -> None:
 
     cleaned = run_mint("clean", "tasklist", "--yes", cwd=root)
     assert cleaned.returncode == 0
-    assert not (root / "generated" / "tasklist").exists()
+    assert not (root / ".mint" / "generated" / "tasklist").exists()
 
 
 def test_cli_new_lint_and_doctor(demo_project) -> None:

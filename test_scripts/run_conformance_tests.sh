@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 MODULE="${1:-example}"
-GENERATED_DIR="${MINT_GENERATED_DIR:-generated/$MODULE}"
+GENERATED_DIR="${MINT_GENERATED_DIR:-.mint/generated/$MODULE}"
 CONFORMANCE_DIR="${MINT_CONFORMANCE_DIR:-conformance/$MODULE}"
 
 if [ ! -d "$GENERATED_DIR" ]; then

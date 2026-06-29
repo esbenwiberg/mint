@@ -13,7 +13,7 @@ The current v1 system is built around offline, reproducible runs:
 - record/replay model cassettes for template-free specs
 - generated unit and conformance gates, plus Python coverage, traceability, and
   mutation-probe gates
-- nested git checkpoints and attempt manifests under `generated/<module>/.mintgen/`
+- nested git checkpoints and attempt manifests under `.mint/generated/<module>/.mintgen/`
 - explicit e2e tests for the public CLI workflow
 
 ## Install Mint
@@ -67,8 +67,9 @@ Claude Code, and `codex-cli` for Codex CLI.
 
 Good first Mint-owned areas are pure helpers, parsers, formatters, rules engines,
 small libraries, and CLI subcommands with a clear public API. Mint renders output
-under `generated/<module>/`; the `.mint/specs/<module>.mint.md` file is the source
-of truth.
+under `.mint/generated/<module>/` by default; `generatedDir` in `mint.yaml` can
+point somewhere else if a repo needs it. The `.mint/specs/<module>.mint.md` file
+is the source of truth.
 
 Ordinary renders run offline from replay cassettes. Live provider recording is
 manual-only:
@@ -157,7 +158,7 @@ resources/cassettes/v1/       Offline model replay fixtures
 test_scripts/                 Generated-code unit/conformance runners
 tests/                        Unit, integration, replay, and e2e tests
 docs/regenerative-system/     Current system documentation
-generated/                    Ignored rendered output
+.mint/generated/              Ignored rendered output
 conformance/                  Ignored generated conformance tests
 ```
 

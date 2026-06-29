@@ -33,7 +33,7 @@ def test_self_hosted_hashing_replays_and_matches_handwritten(make_project, monke
     assert meta["model"] == "mint-replay-selfhost-v1"
     assert meta["functionalUnits"][0]["testQuality"]["status"] == "passed"
 
-    monkeypatch.syspath_prepend(str(project.root / "generated" / "mint-hashing" / "src"))
+    monkeypatch.syspath_prepend(str(project.root / ".mint" / "generated" / "mint-hashing" / "src"))
     sys.modules.pop("mint_hashing", None)
     generated = importlib.import_module("mint_hashing")
 

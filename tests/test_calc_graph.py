@@ -48,7 +48,7 @@ def test_calc_graph_replays_from_clean_state(make_project):
     report = json.loads(
         (
             project.root
-            / "generated"
+            / ".mint" / "generated"
             / "calc-cli"
             / ".mintgen"
             / "reports"

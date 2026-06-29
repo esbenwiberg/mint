@@ -3,7 +3,7 @@
 Each generated module owns a `.mintgen/` directory inside its nested git repo:
 
 ```
-generated/<module>/
+.mint/generated/<module>/
   .git/                      # nested repo; checkpoints per unit
   .mintgen/
     module.json              # the metadata record (below)

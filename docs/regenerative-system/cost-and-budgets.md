@@ -35,7 +35,7 @@ guardrail before a runaway render burns through a large cassette/live-model budg
 Budget aborts write:
 
 ```text
-generated/<module>/.mintgen/reports/budget-abort.json
+.mint/generated/<module>/.mintgen/reports/budget-abort.json
 ```
 
 The report includes module, unit id, phase, attempt, reason, attempts used, token

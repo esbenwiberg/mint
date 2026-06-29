@@ -208,12 +208,12 @@ def test_typescript_model_render_runs_typecheck_vitest_and_reports(make_project,
     meta = project.metadata("calc-ts")
     assert meta["lastSuccessfulUnitId"] == "FR2"
     assert all(record["testQuality"]["status"] == "skipped" for record in meta["functionalUnits"])
-    attempts = project.root / "generated" / "calc-ts" / ".mintgen" / "attempts" / "FR1"
+    attempts = project.root / ".mint" / "generated" / "calc-ts" / ".mintgen" / "attempts" / "FR1"
     assert (attempts / "unit-1.patch.json").is_file()
     assert (attempts / "unit-1.stdout.log").is_file()
-    assert (project.root / "generated" / "calc-ts" / ".mintgen" / "render.log").is_file()
+    assert (project.root / ".mint" / "generated" / "calc-ts" / ".mintgen" / "render.log").is_file()
     report = json.loads(
-        (project.root / "generated" / "calc-ts" / ".mintgen" / "reports" / "latest.json").read_text()
+        (project.root / ".mint" / "generated" / "calc-ts" / ".mintgen" / "reports" / "latest.json").read_text()
     )
     assert report["units"][0]["attemptManifests"]
     tool_log = log.read_text(encoding="utf-8")
@@ -300,7 +300,7 @@ def test_typescript_required_module_wiring_is_explicit(make_project, monkeypatch
 
     assert status == 0, output
     package = json.loads(
-        (project.root / "generated" / "uses-core" / "package.json").read_text(encoding="utf-8")
+        (project.root / ".mint" / "generated" / "uses-core" / "package.json").read_text(encoding="utf-8")
     )
     assert package["dependencies"]["math-core"] == "file:../math-core"
 

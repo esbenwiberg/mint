@@ -11,7 +11,13 @@ import subprocess
 import sys
 from typing import Any
 
-from .config import MintConfig, load_config
+from .config import (
+    DEFAULT_CONFORMANCE_DIR,
+    DEFAULT_GENERATED_DIR,
+    DEFAULT_SPECS_DIR,
+    MintConfig,
+    load_config,
+)
 from .errors import MintError
 from .gitutil import commit_all, ensure_git_repo, git_head, reset_hard
 from .hashing import hash_generated_files, hash_json
@@ -45,13 +51,11 @@ from .state import (
 from .stacks import StackAdapter, adapter_for_stack, known_stacks
 from .test_quality import evaluate_test_quality, format_test_quality_verdict
 
-DEFAULT_SPECS_DIR = ".mint/specs"
-
 INIT_SKELETON = """mint Phase 0 skeleton
 - config: mint.yaml
 - specs: .mint/specs/example.mint.md
 - resources: resources/
-- generated output: generated/
+- generated output: .mint/generated/
 - conformance tests: conformance/
 - scripts: test_scripts/
 """
@@ -59,7 +63,7 @@ INIT_SKELETON = """mint Phase 0 skeleton
 DEFAULT_MINT_YAML = """version: 1
 defaultStack: python-cli
 specsDir: .mint/specs
-generatedDir: generated
+generatedDir: .mint/generated
 conformanceDir: conformance
 scripts:
   unit: test_scripts/run_unit_tests.sh
@@ -103,7 +107,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 MODULE="${1:-example}"
-GENERATED_DIR="${MINT_GENERATED_DIR:-generated/$MODULE}"
+GENERATED_DIR="${MINT_GENERATED_DIR:-.mint/generated/$MODULE}"
 
 if [ ! -d "$GENERATED_DIR" ]; then
   echo "Generated module directory not found: $GENERATED_DIR" >&2
@@ -126,7 +130,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 MODULE="${1:-example}"
-GENERATED_DIR="${MINT_GENERATED_DIR:-generated/$MODULE}"
+GENERATED_DIR="${MINT_GENERATED_DIR:-.mint/generated/$MODULE}"
 CONFORMANCE_DIR="${MINT_CONFORMANCE_DIR:-conformance/$MODULE}"
 
 if [ ! -d "$GENERATED_DIR" ]; then
@@ -367,14 +371,21 @@ def init_project(*, write: bool = False, root: Path | None = None) -> tuple[int,
     lines = ["INIT mint project"]
     failures: list[str] = []
     specs_dir = DEFAULT_SPECS_DIR
+    generated_dir = DEFAULT_GENERATED_DIR
+    conformance_dir = DEFAULT_CONFORMANCE_DIR
     config_path = root / "mint.yaml"
     if config_path.exists():
         try:
-            specs_dir = load_config(config_path).specs_dir
+            config = load_config(config_path)
+            specs_dir = config.specs_dir
+            generated_dir = config.generated_dir
+            conformance_dir = config.conformance_dir
         except MintError:
             specs_dir = DEFAULT_SPECS_DIR
+            generated_dir = DEFAULT_GENERATED_DIR
+            conformance_dir = DEFAULT_CONFORMANCE_DIR
 
-    for rel in [specs_dir, "resources", "generated", "conformance", "test_scripts"]:
+    for rel in [specs_dir, "resources", generated_dir, conformance_dir, "test_scripts"]:
         path = root / rel
         if path.exists():
             if path.is_dir():
@@ -390,7 +401,7 @@ def init_project(*, write: bool = False, root: Path | None = None) -> tuple[int,
         output.extend(f"- FAIL: {failure}" for failure in failures)
         return 1, "\n".join(output) + "\n"
 
-    for rel in ["resources/.gitkeep", "generated/.gitkeep", "conformance/.gitkeep"]:
+    for rel in ["resources/.gitkeep", f"{generated_dir}/.gitkeep", f"{conformance_dir}/.gitkeep"]:
         _write_init_file(root, rel, "", executable=False, lines=lines, failures=failures)
 
     _write_init_file(root, "mint.yaml", DEFAULT_MINT_YAML, executable=False, lines=lines, failures=failures)

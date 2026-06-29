@@ -34,7 +34,7 @@ def write_config(
     tmp_path: Path,
     *,
     specs: str = ".mint/specs",
-    generated: str = "generated",
+    generated: str = ".mint/generated",
     conformance: str = "conformance",
 ) -> Path:
     path = tmp_path / "mint.yaml"
@@ -66,6 +66,16 @@ def test_specs_dir_defaults_to_dot_mint_specs(tmp_path):
     config = load_config(path)
 
     assert config.specs_dir == ".mint/specs"
+
+
+def test_generated_dir_defaults_to_dot_mint_generated(tmp_path):
+    path = write_config(tmp_path)
+    text = path.read_text(encoding="utf-8").replace("generatedDir: .mint/generated\n", "")
+    path.write_text(text, encoding="utf-8")
+
+    config = load_config(path)
+
+    assert config.generated_dir == ".mint/generated"
 
 
 def test_specs_dir_must_be_project_relative(tmp_path):
