@@ -23,9 +23,11 @@ esac
 
 export PYTHONPATH="$GENERATED_SRC:${MINT_REQUIRED_SRC:-}:${PYTHONPATH:-}"
 
-if ! "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
-  echo "pytest is required for $PYTHON_BIN. Install with: $PYTHON_BIN -m pip install -e '.[dev]'" >&2
-  exit 1
+if [ "${MINT_SKIP_PYTEST_VERSION_CHECK:-0}" != "1" ]; then
+  if ! "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
+    echo "pytest is required for $PYTHON_BIN. Install with: $PYTHON_BIN -m pip install -e '.[dev]'" >&2
+    exit 1
+  fi
 fi
 
 "$PYTHON_BIN" -m pytest "$CONFORMANCE_DIR"

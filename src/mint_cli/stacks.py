@@ -80,7 +80,11 @@ class StackAdapter(Protocol):
         ...
 
     def run_mutation_probe(
-        self, context: Any, *, required_paths: list[Path]
+        self,
+        context: Any,
+        *,
+        required_paths: list[Path],
+        baseline_already_passed: bool = False,
     ) -> dict[str, Any]:
         """Mutate generated source and confirm the tests catch it."""
         ...
@@ -178,11 +182,19 @@ class PythonStackAdapter:
         return _measure_coverage(context, required_src=required_paths)
 
     def run_mutation_probe(
-        self, context: Any, *, required_paths: list[Path]
+        self,
+        context: Any,
+        *,
+        required_paths: list[Path],
+        baseline_already_passed: bool = False,
     ) -> dict[str, Any]:
         from .test_quality import _run_mutation_probe
 
-        return _run_mutation_probe(context, required_src=required_paths)
+        return _run_mutation_probe(
+            context,
+            required_src=required_paths,
+            baseline_already_passed=baseline_already_passed,
+        )
 
     def script_env(self, context: Any, required_paths: list[Path]) -> dict[str, str]:
         env = os.environ.copy()
@@ -191,6 +203,7 @@ class PythonStackAdapter:
         if required_paths:
             env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(path) for path in required_paths)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["MINT_SKIP_PYTEST_VERSION_CHECK"] = "1"
         env.setdefault("PYTHONPYCACHEPREFIX", "/private/tmp/mint-pycache")
         env.setdefault("PYTHON_BIN", sys.executable)
         return env
@@ -658,7 +671,11 @@ class TypeScriptStackAdapter:
         return verdict
 
     def run_mutation_probe(
-        self, context: Any, *, required_paths: list[Path]
+        self,
+        context: Any,
+        *,
+        required_paths: list[Path],
+        baseline_already_passed: bool = False,
     ) -> dict[str, Any]:
         config = context.config.test_quality
         if not config.mutation_probe:
@@ -671,16 +688,17 @@ class TypeScriptStackAdapter:
         config_path = self.write_conformance_vitest_config(context, package_name)
         self.rewrite_conformance_src_imports(context, context.module)
 
-        baseline = self._ts_run_tests(context, required_order, config_path)
-        if not baseline["ok"]:
-            return {
-                "status": "failed",
-                "reason": "mutation baseline test run failed: " + baseline["reason"],
-                "candidateCount": 0,
-                "testedCandidates": 0,
-                "survivors": [],
-                "baseline": baseline["detail"],
-            }
+        if not baseline_already_passed:
+            baseline = self._ts_run_tests(context, required_order, config_path)
+            if not baseline["ok"]:
+                return {
+                    "status": "failed",
+                    "reason": "mutation baseline test run failed: " + baseline["reason"],
+                    "candidateCount": 0,
+                    "testedCandidates": 0,
+                    "survivors": [],
+                    "baseline": baseline["detail"],
+                }
 
         candidates = self._ts_mutation_candidates(context)
         if candidates is None:
@@ -807,8 +825,18 @@ class TypeScriptStackAdapter:
         try:
             path.write_text(_ts_mutated_source(original, candidate), encoding="utf-8")
             self.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
-            result = self._ts_run_tests(context, required_order, config_path)
-            return not result["ok"]
+            unit = self._run_npm_script(context, "test:unit", required_order=required_order)
+            if unit.returncode != 0:
+                return True
+            conf = self._run_npm_script(
+                context,
+                "test:conformance",
+                "--config",
+                str(config_path),
+                str(context.conformance_dir),
+                required_order=required_order,
+            )
+            return conf.returncode != 0
         finally:
             path.write_text(original, encoding="utf-8")
             self.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)

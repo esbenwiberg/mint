@@ -31,6 +31,7 @@ def evaluate_test_quality(
     unit: Any,
     *,
     required_src: list[Path],
+    baseline_already_passed: bool = False,
 ) -> dict[str, Any]:
     """Run traceability, coverage, and mutation checks for one rendered unit."""
     adapter = adapter_for_stack(context.spec.stack)
@@ -55,7 +56,11 @@ def evaluate_test_quality(
 
     traceability = _trace_acceptance_criteria(context, unit, adapter.test_quality_token_files(context))
     coverage = adapter.measure_coverage(context, required_paths=required_src)
-    mutation = adapter.run_mutation_probe(context, required_paths=required_src)
+    mutation = adapter.run_mutation_probe(
+        context,
+        required_paths=required_src,
+        baseline_already_passed=baseline_already_passed,
+    )
 
     failures: list[str] = []
     if coverage["status"] == "failed":
@@ -381,13 +386,19 @@ print(json.dumps({
 '''
 
 
-def _run_mutation_probe(context: Any, *, required_src: list[Path]) -> dict[str, Any]:
+def _run_mutation_probe(
+    context: Any,
+    *,
+    required_src: list[Path],
+    baseline_already_passed: bool = False,
+) -> dict[str, Any]:
     if not context.config.test_quality.mutation_probe:
         return {"status": "skipped", "reason": "mutationProbe is false"}
 
-    baseline = _run_mutation_baseline(context, required_src=required_src)
-    if baseline["status"] == "failed":
-        return baseline
+    if not baseline_already_passed:
+        baseline = _run_mutation_baseline(context, required_src=required_src)
+        if baseline["status"] == "failed":
+            return baseline
 
     candidates = _mutation_candidates(context.generated_dir / "src")
     max_candidates = context.config.test_quality.mutation_max_candidates
@@ -512,8 +523,10 @@ def _mutate_and_test(
         _remove_runtime_caches(context.generated_dir)
         _remove_runtime_caches(context.conformance_dir)
         unit_result = _run_project_script(context, context.config.scripts.unit, required_src)
+        if unit_result.returncode != 0:
+            return True
         conf_result = _run_project_script(context, context.config.scripts.conformance, required_src)
-        return unit_result.returncode != 0 or conf_result.returncode != 0
+        return conf_result.returncode != 0
     finally:
         candidate.path.write_text(original, encoding="utf-8")
         _remove_runtime_caches(context.generated_dir)
@@ -552,6 +565,7 @@ def _script_env(context: Any, required_src: list[Path]) -> dict[str, str]:
     if required_src:
         env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(path) for path in required_src)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["MINT_SKIP_PYTEST_VERSION_CHECK"] = "1"
     env.setdefault("PYTHONPYCACHEPREFIX", "/private/tmp/mint-pycache")
     env.setdefault("PYTHON_BIN", sys.executable)
     return env
