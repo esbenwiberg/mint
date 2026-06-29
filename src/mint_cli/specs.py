@@ -207,13 +207,39 @@ def parse_definitions(lines: list[str]) -> list[Definition]:
 
 def parse_bullet_list(lines: list[str], section: str) -> list[str]:
     items: list[str] = []
+    current: list[str] | None = None
+    in_fence = False
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            if in_fence and current is not None:
+                current.append("")
             continue
-        if not stripped.startswith("- "):
-            raise MintError(f"Invalid {section} bullet: {line}")
-        items.append(stripped[2:].strip())
+        if stripped.startswith("- ") and not in_fence:
+            if current is not None:
+                items.append("\n".join(current).strip())
+            current = [stripped[2:].strip()]
+            continue
+        if stripped.startswith("```"):
+            if current is None:
+                raise MintError(
+                    f"Invalid {section} fenced code block: place code fences after a bullet."
+                )
+            current.append(stripped)
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            if current is not None:
+                current.append(line.rstrip())
+            continue
+        if current is not None and line[:1].isspace():
+            current.append(line.rstrip())
+            continue
+        raise MintError(f"Invalid {section} bullet: {line}")
+    if in_fence:
+        raise MintError(f"Unclosed {section} fenced code block.")
+    if current is not None:
+        items.append("\n".join(current).strip())
     return items
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -218,6 +219,7 @@ class TypeScriptStackAdapter:
         self, context: Any, *, required_order: tuple[str, ...]
     ) -> subprocess.CompletedProcess[str]:
         self.wire_required_modules(context, required_order)
+        self.prepare_typecheck_harness(context)
         typecheck = self._run_npm_script(context, "typecheck", required_order=required_order)
         if typecheck.returncode != 0:
             return typecheck
@@ -228,9 +230,15 @@ class TypeScriptStackAdapter:
         self, context: Any, *, required_order: tuple[str, ...]
     ) -> subprocess.CompletedProcess[str]:
         self.wire_required_modules(context, required_order)
+        self.prepare_typecheck_harness(context)
+        package_name = _typescript_package_name(context.generated_dir) or context.module
+        config_path = self.write_conformance_vitest_config(context, package_name)
+        self.rewrite_conformance_src_imports(context, context.module)
         return self._run_npm_script(
             context,
             "test:conformance",
+            "--config",
+            str(config_path),
             str(context.conformance_dir),
             required_order=required_order,
         )
@@ -269,11 +277,18 @@ class TypeScriptStackAdapter:
     def prompt_hints(self, context: Any, required_order: tuple[str, ...]) -> list[str]:
         hints = [
             "Generate a Node/npm TypeScript package under the module root only.",
-            "Write package.json, tsconfig.json, src/**/*.ts, and tests/**/*.test.ts.",
+            "Write package.json, tsconfig.json, src/**/*.ts, and tests/**/*.test.ts. "
+            "Mint will normalize tsconfig moduleResolution to Bundler before tests run.",
             "package.json must include scripts: typecheck = `tsc --noEmit`, "
             "test:unit = `vitest run tests`, and test:conformance = `vitest run`.",
             "Use Vitest for generated unit tests and conformance tests.",
+            "Do not write vitest.conformance.config.ts; Mint owns that harness file.",
             "Conformance files must be written with root `conformance` under FRn/.",
+            f"Conformance tests must import this module as `{context.module}`; "
+            "Mint aliases that module name to src/index.ts for the conformance run.",
+            "Do not import module code from conformance tests with relative ../src paths.",
+            "Generated unit tests must assert only behavior stated by the current unit spec "
+            "or acceptance bullets; do not invent unstated boundary cases.",
             "Do not write outside the generated module patch root or conformance patch root.",
         ]
         if required_order:
@@ -333,6 +348,74 @@ class TypeScriptStackAdapter:
                 json.dumps(package, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+
+    def prepare_typecheck_harness(self, context: Any) -> None:
+        tsconfig_path = context.generated_dir / "tsconfig.json"
+        if tsconfig_path.exists():
+            try:
+                config = json.loads(tsconfig_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise MintError(f"Generated tsconfig.json is invalid JSON: {exc}") from exc
+            if not isinstance(config, dict):
+                raise MintError("Generated tsconfig.json must contain a JSON object.")
+        else:
+            config = {}
+
+        compiler_options = config.get("compilerOptions")
+        if not isinstance(compiler_options, dict):
+            compiler_options = {}
+            config["compilerOptions"] = compiler_options
+
+        compiler_options.setdefault("target", "ES2022")
+        compiler_options["moduleResolution"] = "Bundler"
+        if str(compiler_options.get("module", "")).lower() in {"node16", "nodenext", ""}:
+            compiler_options["module"] = "ESNext"
+        compiler_options.setdefault("strict", True)
+        config.setdefault("include", ["src/**/*.ts", "tests/**/*.ts"])
+
+        tsconfig_path.write_text(
+            json.dumps(config, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def write_conformance_vitest_config(self, context: Any, package_name: str) -> Path:
+        config_path = context.generated_dir / "vitest.conformance.config.ts"
+        aliases = {context.module: str(context.generated_dir / "src" / "index.ts")}
+        if package_name != context.module:
+            aliases[package_name] = str(context.generated_dir / "src" / "index.ts")
+        alias_lines = "".join(
+            f"      {json.dumps(name)}: {json.dumps(target)},\n"
+            for name, target in sorted(aliases.items())
+        )
+        contents = (
+            "import { defineConfig } from 'vitest/config';\n\n"
+            "export default defineConfig({\n"
+            f"  root: {json.dumps(str(context.root))},\n"
+            "  test: {\n"
+            "    include: ['conformance/**/*.test.ts'],\n"
+            "  },\n"
+            "  resolve: {\n"
+            "    alias: {\n"
+            f"{alias_lines}"
+            "    },\n"
+            "  },\n"
+            "});\n"
+        )
+        config_path.write_text(contents, encoding="utf-8")
+        return config_path
+
+    def rewrite_conformance_src_imports(self, context: Any, import_name: str) -> None:
+        if not context.conformance_dir.exists():
+            return
+        pattern = re.compile(
+            r"(?P<prefix>\bfrom\s+)(?P<quote>['\"])(?:\.\./)+src(?:/index)?(?:\.(?:ts|js))?(?P=quote)"
+        )
+        replacement = rf"\g<prefix>'{import_name}'"
+        for path in sorted(context.conformance_dir.rglob("*.ts")):
+            text = path.read_text(encoding="utf-8")
+            rewritten = pattern.sub(replacement, text)
+            if rewritten != text:
+                path.write_text(rewritten, encoding="utf-8")
 
     def _run_npm_script(
         self,

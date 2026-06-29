@@ -949,7 +949,11 @@ def healthcheck_module(
             failures.append(f"Generated metadata is invalid JSON: {exc}")
         else:
             if metadata is None:
-                failures.append(f"Generated repo is missing metadata: {context.generated_dir}")
+                failures.append(
+                    f"Generated repo is missing metadata: {context.generated_dir}. "
+                    f"Fix: run `mint clean {context.module} --yes` before retrying, "
+                    "or rerun the render with --force if you intentionally want to replace it."
+                )
             else:
                 messages.append(
                     f"Generated repo: {context.generated_dir.relative_to(context.root).as_posix()}"

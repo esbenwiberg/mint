@@ -120,7 +120,22 @@ def install_ts_tool_stubs(root: Path, monkeypatch) -> Path:
     return log
 
 
-def ts_patch(module: str, unit: str, source: str, *, extra_unit_test: str = "") -> str:
+def ts_patch(
+    module: str,
+    unit: str,
+    source: str,
+    *,
+    extra_unit_test: str = "",
+    tsconfig_options: dict | None = None,
+    conformance_contents: str = "import { describe, expect, it } from 'vitest';\n",
+    extra_files: list[dict] | None = None,
+) -> str:
+    compiler_options = tsconfig_options or {
+        "target": "ES2022",
+        "module": "ESNext",
+        "moduleResolution": "Bundler",
+        "strict": True,
+    }
     files = [
         {"path": ".gitignore", "action": "write", "contents": "node_modules/\n.vite/\n.vitest/\ncoverage/\n"},
         {
@@ -146,12 +161,7 @@ def ts_patch(module: str, unit: str, source: str, *, extra_unit_test: str = "") 
             "action": "write",
             "contents": json.dumps(
                 {
-                    "compilerOptions": {
-                        "target": "ES2022",
-                        "module": "ESNext",
-                        "moduleResolution": "Bundler",
-                        "strict": True,
-                    },
+                    "compilerOptions": compiler_options,
                     "include": ["src/**/*.ts", "tests/**/*.ts"],
                 },
                 indent=2,
@@ -167,10 +177,11 @@ def ts_patch(module: str, unit: str, source: str, *, extra_unit_test: str = "") 
         {
             "path": f"{unit}/{unit.lower()}.test.ts",
             "action": "write",
-            "contents": "import { describe, expect, it } from 'vitest';\n",
+            "contents": conformance_contents,
             "root": "conformance",
         },
     ]
+    files.extend(extra_files or [])
     return json.dumps({"summary": f"{module} {unit}", "files": files})
 
 
@@ -219,7 +230,70 @@ def test_typescript_model_render_runs_typecheck_vitest_and_reports(make_project,
     tool_log = log.read_text(encoding="utf-8")
     assert "tsc --noEmit" in tool_log
     assert "vitest run tests" in tool_log
+    assert "--config" in tool_log
+    assert "vitest.conformance.config.ts" in tool_log
     assert str(project.root / "conformance" / "calc-ts") in tool_log
+    config_text = (
+        project.root / ".mint" / "generated" / "calc-ts" / "vitest.conformance.config.ts"
+    ).read_text(encoding="utf-8")
+    assert f"root: {json.dumps(str(project.root))}" in config_text
+    assert "include: ['conformance/**/*.test.ts']" in config_text
+    assert f"{json.dumps('calc-ts')}: " in config_text
+
+
+def test_typescript_adapter_normalizes_tsconfig_module_resolution(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec("math-core", CORE_SPEC)
+    install_ts_tool_stubs(project.root, monkeypatch)
+    monkeypatch.chdir(project.root)
+
+    def response(request: RenderRequest) -> str:
+        return ts_patch(
+            request.module,
+            "FR1",
+            "export function double(n: number): number { return n * 2; }\n",
+            tsconfig_options={
+                "target": "ES2022",
+                "module": "NodeNext",
+                "moduleResolution": "NodeNext",
+                "strict": True,
+            },
+        )
+
+    status, output = workflow.render_module("math-core", model_client=ScriptedModelClient(response))
+
+    assert status == 0, output
+    tsconfig = json.loads(
+        (project.root / ".mint" / "generated" / "math-core" / "tsconfig.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert tsconfig["compilerOptions"]["moduleResolution"] == "Bundler"
+    assert tsconfig["compilerOptions"]["module"] == "ESNext"
+
+
+def test_typescript_adapter_rewrites_conformance_relative_src_imports(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec("math-core", CORE_SPEC)
+    install_ts_tool_stubs(project.root, monkeypatch)
+    monkeypatch.chdir(project.root)
+
+    def response(request: RenderRequest) -> str:
+        return ts_patch(
+            request.module,
+            "FR1",
+            "export function double(n: number): number { return n * 2; }\n",
+            conformance_contents=(
+                "import { describe, expect, it } from 'vitest';\n"
+                "import { double } from '../../src/index';\n"
+            ),
+        )
+
+    status, output = workflow.render_module("math-core", model_client=ScriptedModelClient(response))
+
+    assert status == 0, output
+    conformance = project.root / "conformance" / "math-core" / "FR1" / "fr1.test.ts"
+    assert "from 'math-core'" in conformance.read_text(encoding="utf-8")
 
 
 def test_typescript_rerenders_from_changed_functional_unit(make_project, monkeypatch):
@@ -351,6 +425,23 @@ def test_typescript_healthcheck_missing_replay_fails_loudly(make_project):
     assert status == 1
     assert "Replay cassettes missing for model renderer spec calc-ts" in output
     assert "MINT_LIVE=1 mint live-smoke calc-ts" in output
+
+
+def test_typescript_healthcheck_partial_generated_repo_points_to_clean(make_project):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec("calc-ts", TS_SPEC)
+    generated = project.root / ".mint" / "generated" / "calc-ts"
+    generated.mkdir(parents=True)
+
+    status, output = workflow.healthcheck_module(
+        "calc-ts",
+        root=project.root,
+        allow_missing_replay=True,
+    )
+
+    assert status == 1
+    assert "Generated repo is missing metadata" in output
+    assert "mint clean calc-ts --yes" in output
 
 
 def test_typescript_stale_replay_cassette_fails_with_live_smoke_hint(tmp_path):

@@ -59,6 +59,23 @@ def test_parses_good_spec(tmp_path):
     assert spec.imports == [] and spec.requires == []
 
 
+def test_body_bullets_allow_fenced_code_blocks(tmp_path):
+    text = GOOD.replace(
+        "- Conformance tests use pytest.",
+        "- Pin the exact test harness:\n"
+        "```ts\n"
+        "export default { test: { include: ['conformance/**/*.test.ts'] } };\n"
+        "```\n"
+        "- Conformance tests use pytest.",
+    )
+
+    spec = parse_spec_file(write(tmp_path, text))
+
+    assert "```ts" in spec.test[0]
+    assert "conformance/**/*.test.ts" in spec.test[0]
+    assert spec.test[1] == "Conformance tests use pytest."
+
+
 def test_missing_frontmatter(tmp_path):
     text = GOOD.split("---\n", 2)[2]  # drop the frontmatter block
     with pytest.raises(MintError, match="missing YAML frontmatter"):
