@@ -644,6 +644,7 @@ def lint_module(module: str, *, root: Path | None = None) -> tuple[int, str]:
                 f"{unit.id} acceptance has no testable assertion; add a concrete return, output, "
                 "exit code, stored state, or error condition."
             )
+        failures.extend(_threshold_boundary_failures(unit))
 
     combined = " ".join(
         spec.implementation
@@ -1453,9 +1454,53 @@ def _looks_vague(text: str) -> bool:
 
 def _has_testable_assertion(text: str) -> bool:
     lower = text.lower()
-    if any(symbol in text for symbol in ["==", "!=", "<=", ">=", " exit ", "$?"]):
+    if any(symbol in text for symbol in ["==", "!=", "<=", ">=", "→", "->", " exit ", "$?"]):
         return True
     return any(re.search(rf"\b{re.escape(term)}\b", lower) for term in _TESTABLE_TERMS)
+
+
+_SYMBOLIC_THRESHOLD_RE = re.compile(
+    r"(?:<=|>=|<|>|≤|≥)\s*(?P<right>[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?)"
+    r"|(?P<left>[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?)\s*(?:<=|>=|<|>|≤|≥)",
+    re.IGNORECASE,
+)
+_WORD_THRESHOLD_RE = re.compile(
+    r"\b(?:less than|greater than|at least|at most|no more than|no less than|"
+    r"below|above|under|over)\s+"
+    r"(?P<number>[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _threshold_boundary_failures(unit: FunctionalUnit) -> list[str]:
+    thresholds: dict[str, str] = {}
+    for item in unit.spec:
+        for number in _relational_thresholds(item):
+            thresholds.setdefault(number, item)
+    if not thresholds:
+        return []
+
+    acceptance_text = " ".join(unit.acceptance)
+    failures: list[str] = []
+    for number, source in sorted(thresholds.items()):
+        if re.search(rf"(?<![\d.]){re.escape(number)}(?![\d.])", acceptance_text):
+            continue
+        failures.append(
+            f"{unit.id} relational threshold {number} needs an exact-boundary "
+            f"acceptance example; found in spec: {source}"
+        )
+    return failures
+
+
+def _relational_thresholds(text: str) -> set[str]:
+    numbers: set[str] = set()
+    for match in _SYMBOLIC_THRESHOLD_RE.finditer(text):
+        number = match.group("right") or match.group("left")
+        if number is not None:
+            numbers.add(number)
+    for match in _WORD_THRESHOLD_RE.finditer(text):
+        numbers.add(match.group("number"))
+    return numbers
 
 
 def _prefix_lines(text: str, prefix: str) -> list[str]:
@@ -1880,7 +1925,12 @@ def render_one_unit(
             continue
         apply_patch(patch, context.generated_dir, context.conformance_dir)
 
-        result = adapter.run_unit_tests(context, required_order=hashes.required_order)
+        rendered_unit_ids = tuple(u["id"] for u in units_so_far)
+        result = adapter.run_unit_tests(
+            context,
+            required_order=hashes.required_order,
+            rendered_unit_ids=rendered_unit_ids,
+        )
         classification = adapter.classify_test_result("unit", result)
         write_attempt(
             context.generated_dir,
@@ -1948,7 +1998,11 @@ def render_one_unit(
                 continue
             apply_patch(patch, context.generated_dir, context.conformance_dir)
             # Guard: a conformance-driven change must not break the unit tests.
-            recheck = adapter.run_unit_tests(context, required_order=hashes.required_order)
+            recheck = adapter.run_unit_tests(
+                context,
+                required_order=hashes.required_order,
+                rendered_unit_ids=tuple(u["id"] for u in units_so_far),
+            )
             if adapter.classify_test_result("unit", recheck) != "passed":
                 raise MintError(
                     format_phase_failure("unit-regression", unit, "unit_failed", recheck)

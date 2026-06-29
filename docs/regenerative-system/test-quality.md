@@ -1,9 +1,8 @@
 # Test-quality gate
 
 The unit and conformance gates prove that generated tests pass. The test-quality
-gate checks that those tests are not shallow. Today the full gate applies to Python
-stacks; TypeScript stacks record a clean skipped verdict until TS coverage and
-mutation support is added.
+gate checks that those tests are not shallow. Python and TypeScript stacks both run
+the gate; stack adapters own the coverage and mutation mechanics.
 
 It runs after unit and conformance tests pass, before the unit checkpoint is
 committed. A failure stops the render and records the verdict in both the attempt
@@ -16,7 +15,8 @@ manifest and `module.json`.
 For Python stacks, `mint` runs the generated unit tests and conformance tests under
 a line tracer in separate subprocesses, then merges covered line numbers for files
 under the generated module `src/` directory (`.mint/generated/<module>/src/` by
-default).
+default). For TypeScript stacks, Mint runs Vitest with the v8 coverage provider and
+parses `coverage-final.json`.
 
 Generated provenance files are excluded. The default threshold is 60 percent.
 
@@ -43,6 +43,11 @@ render continues or reports failure.
 This is intentionally lightweight, not full mutation testing. By default it tests
 up to three public candidates per unit.
 
+For modules with multiple functional units, coverage and mutation are deferred
+until the final unit. Acceptance traceability still runs after every unit. This
+keeps an incremental render from failing because a model predeclared later public
+functions before their tests exist.
+
 ## Configuration
 
 `mint.yaml`:
@@ -57,10 +62,9 @@ testQuality:
 
 The gate is enabled by default even when this section is omitted.
 
-For `typescript-lib` and `typescript-node`, the attempt manifest stores
-`"status": "skipped"` with reason `test-quality is not implemented for <stack> yet`.
-The unit and conformance gates still run through `tsc --noEmit` and Vitest before
-that skipped verdict is recorded.
+For `typescript-lib` and `typescript-node`, missing coverage or mutation tooling is
+a hard failure with a fix hint. Generated packages need `typescript`, `vitest`, and
+`@vitest/coverage-v8` available to their npm scripts.
 
 ## Metadata
 

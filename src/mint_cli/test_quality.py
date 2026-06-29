@@ -55,12 +55,17 @@ def evaluate_test_quality(
         }
 
     traceability = _trace_acceptance_criteria(context, unit, adapter.test_quality_token_files(context))
-    coverage = adapter.measure_coverage(context, required_paths=required_src)
-    mutation = adapter.run_mutation_probe(
-        context,
-        required_paths=required_src,
-        baseline_already_passed=baseline_already_passed,
-    )
+    if _defer_coverage_and_mutation(context, unit):
+        reason = "deferred until final functional unit for multi-unit module"
+        coverage = {"status": "skipped", "reason": reason}
+        mutation = {"status": "skipped", "reason": reason}
+    else:
+        coverage = adapter.measure_coverage(context, required_paths=required_src)
+        mutation = adapter.run_mutation_probe(
+            context,
+            required_paths=required_src,
+            baseline_already_passed=baseline_already_passed,
+        )
 
     failures: list[str] = []
     if coverage["status"] == "failed":
@@ -81,6 +86,15 @@ def evaluate_test_quality(
         "traceability": traceability,
         "mutation": mutation,
     }
+
+
+def _defer_coverage_and_mutation(context: Any, unit: Any) -> bool:
+    units = list(getattr(context.spec, "functional_units", []))
+    if len(units) <= 1:
+        return False
+    current_id = str(getattr(unit, "id", ""))
+    final_id = str(getattr(units[-1], "id", ""))
+    return current_id != final_id
 
 
 def format_test_quality_verdict(verdict: dict[str, Any]) -> str:

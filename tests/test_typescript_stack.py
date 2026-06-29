@@ -346,6 +346,9 @@ def test_typescript_test_quality_reports_coverage_and_mutation(make_project, mon
     assert fr2["mutation"]["status"] == "passed"
     assert fr2["mutation"]["testedCandidates"] >= 1
     assert all(item["status"] == "passed" for item in fr2["traceability"])
+    fr1 = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]
+    assert fr1["coverage"]["status"] == "skipped"
+    assert "deferred until final functional unit" in fr1["coverage"]["reason"]
 
 
 def test_typescript_test_quality_fails_on_low_coverage(make_project, monkeypatch):
@@ -362,7 +365,7 @@ def test_typescript_test_quality_fails_on_low_coverage(make_project, monkeypatch
     assert status == 1
     assert "test-quality gate failed" in output
     assert "coverage" in output
-    coverage = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]["coverage"]
+    coverage = project.metadata("calc-ts")["functionalUnits"][1]["testQuality"]["coverage"]
     assert coverage["status"] == "failed"
     assert coverage["percent"] < 60
 
@@ -380,9 +383,177 @@ def test_typescript_test_quality_fails_when_mutation_survives(make_project, monk
 
     assert status == 1
     assert "test-quality gate failed" in output
-    mutation = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]["mutation"]
+    mutation = project.metadata("calc-ts")["functionalUnits"][1]["testQuality"]["mutation"]
     assert mutation["status"] == "failed"
     assert mutation["survivors"]
+
+
+def test_typescript_adapter_rejects_explicit_signature_drift(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec(
+        "matcher",
+        """---
+module: matcher
+description: matcher rules
+imports: []
+requires: []
+stack: typescript-lib
+rendererProvider: model
+rendererModel: mock-ts-model
+rendererPromptVersion: ts-v1
+---
+
+## definitions
+- Resource: resource record.
+## implementation
+- Expose `matchByDefinition(resource, contract, fields): boolean` from src/index.ts.
+- Use package.json scripts with tsc --noEmit and Vitest.
+## test
+- Unit and conformance tests use Vitest.
+## functional
+- id: FR1
+  title: match by definition
+  spec:
+    - `matchByDefinition(resource, contract, fields): boolean` returns whether the resource satisfies the contract.
+  acceptance:
+    - matchByDefinition({ id: "r1" }, { id: "c1" }, []) returns true.
+""",
+    )
+    install_ts_tool_stubs(project.root, monkeypatch)
+    disable_test_quality(project.root)
+    monkeypatch.chdir(project.root)
+
+    def response(request: RenderRequest) -> str:
+        return ts_patch(
+            request.module,
+            "FR1",
+            "export type Resource = { id: string };\n"
+            "export function matchByDefinition(resources: Resource[]): Resource[] { return resources; }\n",
+            extra_unit_test=(
+                "import { matchByDefinition } from '../src/index';\n"
+                "describe('matchByDefinition', () => { it('runs', () => expect(matchByDefinition([])).toEqual([])); });\n"
+            ),
+        )
+
+    status, output = workflow.render_module("matcher", model_client=ScriptedModelClient(response))
+
+    assert status == 1
+    assert "TypeScript signature mismatch for `matchByDefinition`" in output
+    assert "expected 3 params but generated 1" in output
+
+
+def test_typescript_signature_check_scopes_to_rendered_units(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec(
+        "match",
+        """---
+module: match
+description: multi-function matcher
+imports: []
+requires: []
+stack: typescript-lib
+rendererProvider: model
+rendererModel: mock-ts-model
+rendererPromptVersion: ts-v1
+---
+
+## definitions
+- Lookup: normalized text key.
+## implementation
+- Expose matcher helpers from src/index.ts.
+- Use package.json scripts with tsc --noEmit and Vitest.
+## test
+- Unit and conformance tests use Vitest.
+## functional
+- id: FR1
+  title: normalize lookup text
+  spec:
+    - `normalizeLookup(value): string` lowercases and trims text.
+  acceptance:
+    - normalizeLookup(" North ") returns "north".
+- id: FR2
+  title: read a resource field
+  spec:
+    - `resourceFieldValue(resource, field): string | undefined` returns the field value.
+  acceptance:
+    - resourceFieldValue({ name: "Ada" }, "name") returns "Ada".
+""",
+    )
+    install_ts_tool_stubs(project.root, monkeypatch)
+    disable_test_quality(project.root)
+    monkeypatch.chdir(project.root)
+
+    def response(request: RenderRequest) -> str:
+        return ts_patch(
+            request.module,
+            "FR1",
+            "export function normalizeLookup(value: unknown): string { return String(value).trim().toLowerCase(); }\n",
+            extra_unit_test=(
+                "import { normalizeLookup } from '../src/index';\n"
+                "describe('normalizeLookup', () => { it('normalizes', () => expect(normalizeLookup(' North ')).toBe('north')); });\n"
+            ),
+        )
+
+    status, output = workflow.render_module(
+        "match",
+        unit_range="FR1:FR1",
+        model_client=ScriptedModelClient(response),
+    )
+
+    assert status == 0, output
+    assert "resourceFieldValue" not in output
+
+
+def test_typescript_signature_check_ignores_prose_with_parentheses(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-ts-model", prompt_version="ts-v1")
+    project.write_spec(
+        "choices",
+        """---
+module: choices
+description: choice helper
+imports: []
+requires: []
+stack: typescript-lib
+rendererProvider: model
+rendererModel: mock-ts-model
+rendererPromptVersion: ts-v1
+---
+
+## definitions
+- Choice: selected lookup key.
+## implementation
+- Expose choose from src/index.ts.
+- Use package.json scripts with tsc --noEmit and Vitest.
+## test
+- Unit and conformance tests use Vitest.
+## functional
+- id: FR1
+  title: choose fallback
+  spec:
+    - Otherwise (choice/lookup): return the fallback value.
+  acceptance:
+    - choose("", "fallback") returns "fallback".
+""",
+    )
+    install_ts_tool_stubs(project.root, monkeypatch)
+    disable_test_quality(project.root)
+    monkeypatch.chdir(project.root)
+
+    def response(request: RenderRequest) -> str:
+        return ts_patch(
+            request.module,
+            "FR1",
+            "export function choose(choice: string, fallback: string): string { return choice || fallback; }\n",
+            extra_unit_test=(
+                "import { choose } from '../src/index';\n"
+                "describe('choose', () => { it('falls back', () => expect(choose('', 'fallback')).toBe('fallback')); });\n"
+            ),
+        )
+
+    status, output = workflow.render_module("choices", model_client=ScriptedModelClient(response))
+
+    assert status == 0, output
+    assert "Otherwise" not in output
 
 
 def test_typescript_test_quality_hard_fails_without_coverage_tooling(make_project, monkeypatch):
@@ -410,7 +581,9 @@ def test_typescript_test_quality_hard_fails_without_coverage_tooling(make_projec
 
     assert status == 1
     assert "test-quality gate failed" in output
-    coverage = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]["coverage"]
+    fr1_coverage = project.metadata("calc-ts")["functionalUnits"][0]["testQuality"]["coverage"]
+    assert fr1_coverage["status"] == "skipped"
+    coverage = project.metadata("calc-ts")["functionalUnits"][1]["testQuality"]["coverage"]
     assert coverage["status"] == "failed"
     assert "@vitest/coverage-v8" in coverage["reason"]
 

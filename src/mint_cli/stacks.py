@@ -25,6 +25,20 @@ class StackHealth:
     failures: list[str]
 
 
+@dataclass(frozen=True)
+class TypeScriptParam:
+    name: str
+    type: str | None = None
+
+
+@dataclass(frozen=True)
+class TypeScriptSignature:
+    name: str
+    params: tuple[TypeScriptParam, ...]
+    return_type: str | None
+    source: str
+
+
 class StackAdapter(Protocol):
     """Boundary between Mint's render loop and target-stack tooling."""
 
@@ -43,7 +57,11 @@ class StackAdapter(Protocol):
         ...
 
     def run_unit_tests(
-        self, context: Any, *, required_order: tuple[str, ...]
+        self,
+        context: Any,
+        *,
+        required_order: tuple[str, ...],
+        rendered_unit_ids: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
         ...
 
@@ -127,7 +145,11 @@ class PythonStackAdapter:
         )
 
     def run_unit_tests(
-        self, context: Any, *, required_order: tuple[str, ...]
+        self,
+        context: Any,
+        *,
+        required_order: tuple[str, ...],
+        rendered_unit_ids: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
         return _run_project_script(
             context,
@@ -265,10 +287,25 @@ class TypeScriptStackAdapter:
         )
 
     def run_unit_tests(
-        self, context: Any, *, required_order: tuple[str, ...]
+        self,
+        context: Any,
+        *,
+        required_order: tuple[str, ...],
+        rendered_unit_ids: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
         self.wire_required_modules(context, required_order)
         self.prepare_typecheck_harness(context)
+        signature_failures = self.validate_declared_signatures(
+            context,
+            rendered_unit_ids=rendered_unit_ids,
+        )
+        if signature_failures:
+            return subprocess.CompletedProcess(
+                args=["mint", "typescript-signature-check"],
+                returncode=1,
+                stdout="",
+                stderr="\n".join(signature_failures) + "\n",
+            )
         typecheck = self._run_npm_script(context, "typecheck", required_order=required_order)
         if typecheck.returncode != 0:
             return typecheck
@@ -340,6 +377,10 @@ class TypeScriptStackAdapter:
             "Do not import module code from conformance tests with relative ../src paths.",
             "Generated unit tests must assert only behavior stated by the current unit spec "
             "or acceptance bullets; do not invent unstated boundary cases.",
+            "Treat backticked TypeScript signatures in the current unit spec as exact "
+            "public API contracts.",
+            "Grow the public API incrementally for the current unit and prior rendered units; "
+            "do not create placeholder stubs for future functional units.",
             "Do not write outside the generated module patch root or conformance patch root.",
         ]
         if required_order:
@@ -467,6 +508,35 @@ class TypeScriptStackAdapter:
             rewritten = pattern.sub(replacement, text)
             if rewritten != text:
                 path.write_text(rewritten, encoding="utf-8")
+
+    def validate_declared_signatures(
+        self,
+        context: Any,
+        *,
+        rendered_unit_ids: tuple[str, ...] = (),
+    ) -> list[str]:
+        expected = _typescript_spec_signatures(context.spec, rendered_unit_ids=rendered_unit_ids)
+        if not expected:
+            return []
+        actual = _typescript_source_signatures(context.generated_dir / "src")
+        failures: list[str] = []
+        for signature in expected:
+            generated = actual.get(signature.name)
+            if generated is None:
+                failures.append(
+                    "TypeScript signature mismatch: expected "
+                    f"`{_format_ts_signature(signature)}` from spec, but no generated "
+                    f"export named `{signature.name}` was found."
+                )
+                continue
+            mismatch = _typescript_signature_mismatch(signature, generated)
+            if mismatch:
+                failures.append(
+                    "TypeScript signature mismatch for "
+                    f"`{signature.name}`: {mismatch}. "
+                    f"Spec declared `{_format_ts_signature(signature)}` in: {signature.source}"
+                )
+        return failures
 
     def _run_npm_script(
         self,
@@ -912,6 +982,243 @@ def _typescript_package_name(module_dir: Path) -> str | None:
         return None
     name = package.get("name") if isinstance(package, dict) else None
     return str(name) if isinstance(name, str) and name.strip() else None
+
+
+_TS_SIGNATURE_IN_TICKS_RE = re.compile(r"`([^`]*\([^`]*\)\s*:\s*[^`]*)`")
+_TS_SIGNATURE_SPACED_RE = re.compile(
+    r"(?:\bexport\s+)?(?:\bfunction\s+)?"
+    r"\b(?P<name>[A-Za-z_$][\w$]*)\s*"
+    r"\((?P<params>[^()]*)\)\s*:\s*"
+    r"(?P<return>[A-Za-z_$][A-Za-z0-9_$.\[\]<>|&?,{} ]*)"
+)
+_TS_EXPORT_FUNCTION_RE = re.compile(
+    r"\bexport\s+(?:async\s+)?function\s+"
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*"
+    r"\((?P<params>[^()]*)\)\s*"
+    r"(?::\s*(?P<return>[^{;\n]+))?",
+    re.MULTILINE,
+)
+_TS_EXPORT_ARROW_RE = re.compile(
+    r"\bexport\s+const\s+"
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*"
+    r"(?::[^=]+)?=\s*(?:async\s*)?"
+    r"(?:\((?P<params>[^()]*)\)|(?P<single>[A-Za-z_$][\w$]*))\s*"
+    r"(?::\s*(?P<return>[^=;\n]+))?\s*=>",
+    re.MULTILINE,
+)
+
+
+def _typescript_spec_signatures(
+    spec: Any, *, rendered_unit_ids: tuple[str, ...] = ()
+) -> list[TypeScriptSignature]:
+    signatures: list[TypeScriptSignature] = []
+    seen: set[tuple[str, tuple[tuple[str, str | None], ...], str | None]] = set()
+    allowed = set(rendered_unit_ids)
+    texts: list[str] = []
+    for unit in getattr(spec, "functional_units", []):
+        if allowed and getattr(unit, "id", "") not in allowed:
+            continue
+        texts.extend(getattr(unit, "spec", []))
+
+    for text in texts:
+        for match in _TS_SIGNATURE_IN_TICKS_RE.finditer(text):
+            signature = _parse_ts_signature(
+                match.group(1),
+                source=text,
+            )
+            if signature is None:
+                continue
+            key = (
+                signature.name,
+                tuple((param.name, param.type) for param in signature.params),
+                signature.return_type,
+            )
+            if key not in seen:
+                signatures.append(signature)
+                seen.add(key)
+    return signatures
+
+
+def _typescript_source_signatures(src_dir: Path) -> dict[str, TypeScriptSignature]:
+    signatures: dict[str, TypeScriptSignature] = {}
+    if not src_dir.exists():
+        return signatures
+    for path in sorted(src_dir.rglob("*.ts")):
+        if path.name.endswith(".d.ts"):
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        rel = path.relative_to(src_dir).as_posix()
+        for match in _TS_EXPORT_FUNCTION_RE.finditer(text):
+            signature = _signature_from_match(match, rel)
+            signatures.setdefault(signature.name, signature)
+        for match in _TS_EXPORT_ARROW_RE.finditer(text):
+            params = match.group("params")
+            if params is None:
+                params = match.group("single") or ""
+            signature = TypeScriptSignature(
+                name=match.group("name"),
+                params=tuple(_parse_ts_params(params)),
+                return_type=_clean_ts_type(match.group("return")),
+                source=rel,
+            )
+            signatures.setdefault(signature.name, signature)
+    return signatures
+
+
+def _signature_from_match(match: re.Match[str], source: str) -> TypeScriptSignature:
+    return TypeScriptSignature(
+        name=match.group("name"),
+        params=tuple(_parse_ts_params(match.group("params") or "")),
+        return_type=_clean_ts_type(match.group("return")),
+        source=source,
+    )
+
+
+def _parse_ts_signature(candidate: str, *, source: str) -> TypeScriptSignature | None:
+    match = _TS_SIGNATURE_SPACED_RE.search(candidate.strip())
+    if match is None:
+        return None
+    return TypeScriptSignature(
+        name=match.group("name"),
+        params=tuple(_parse_ts_params(match.group("params") or "")),
+        return_type=_clean_ts_type(match.group("return")),
+        source=source,
+    )
+
+
+def _parse_ts_params(params: str) -> list[TypeScriptParam]:
+    result: list[TypeScriptParam] = []
+    for raw in _split_ts_top_level(params):
+        item = raw.strip()
+        if not item:
+            continue
+        item = _strip_ts_default(item)
+        name, param_type = _split_ts_param_type(item)
+        name = name.strip()
+        if name.startswith("..."):
+            name = name[3:].strip()
+        name = name.rstrip("?").strip()
+        result.append(TypeScriptParam(name=name, type=_clean_ts_type(param_type)))
+    return result
+
+
+def _split_ts_top_level(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escape = False
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    closers = set(pairs.values())
+    for index, char in enumerate(text):
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+        elif char in pairs:
+            depth += 1
+        elif char in closers and depth > 0:
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _strip_ts_default(param: str) -> str:
+    depth = 0
+    quote: str | None = None
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    closers = set(pairs.values())
+    for index, char in enumerate(param):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+        elif char in pairs:
+            depth += 1
+        elif char in closers and depth > 0:
+            depth -= 1
+        elif char == "=" and depth == 0:
+            return param[:index]
+    return param
+
+
+def _split_ts_param_type(param: str) -> tuple[str, str | None]:
+    depth = 0
+    quote: str | None = None
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    closers = set(pairs.values())
+    for index, char in enumerate(param):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+        elif char in pairs:
+            depth += 1
+        elif char in closers and depth > 0:
+            depth -= 1
+        elif char == ":" and depth == 0:
+            return param[:index], param[index + 1 :]
+    return param, None
+
+
+def _clean_ts_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip().rstrip(" {=>;,.")
+    return cleaned or None
+
+
+def _normalize_ts_type(value: str | None) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def _typescript_signature_mismatch(
+    expected: TypeScriptSignature, actual: TypeScriptSignature
+) -> str | None:
+    if len(expected.params) != len(actual.params):
+        return f"expected {len(expected.params)} params but generated {len(actual.params)}"
+    for index, (want, got) in enumerate(zip(expected.params, actual.params, strict=True), start=1):
+        if _simple_identifier(want.name) and _simple_identifier(got.name) and want.name != got.name:
+            return f"param {index} is `{got.name}` but spec declares `{want.name}`"
+        if want.type and _normalize_ts_type(want.type) != _normalize_ts_type(got.type):
+            return (
+                f"param {index} type is `{got.type or '(missing)'}` "
+                f"but spec declares `{want.type}`"
+            )
+    if expected.return_type and _normalize_ts_type(expected.return_type) != _normalize_ts_type(
+        actual.return_type
+    ):
+        return (
+            f"return type is `{actual.return_type or '(missing)'}` "
+            f"but spec declares `{expected.return_type}`"
+        )
+    return None
+
+
+def _simple_identifier(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_$][\w$]*", value))
+
+
+def _format_ts_signature(signature: TypeScriptSignature) -> str:
+    params = ", ".join(
+        f"{param.name}: {param.type}" if param.type else param.name
+        for param in signature.params
+    )
+    suffix = f": {signature.return_type}" if signature.return_type else ""
+    return f"{signature.name}({params}){suffix}"
 
 
 def _remove_python_caches(root: Path) -> None:

@@ -186,7 +186,10 @@ def test_metadata_records_hashes_attempts_commits(demo_project, monkeypatch):
     )
     quality_data = json.loads(quality_attempt.read_text())
     assert quality_data["classification"] == "passed"
-    assert quality_data["testQuality"]["coverage"]["percent"] >= 60
+    assert quality_data["testQuality"]["coverage"]["status"] == "skipped"
+    assert "deferred until final functional unit" in quality_data["testQuality"]["coverage"]["reason"]
+    fr2 = meta["functionalUnits"][1]
+    assert fr2["testQuality"]["coverage"]["percent"] >= 60
 
 
 def test_editing_later_unit_rerenders_only_that_slice(demo_project, monkeypatch):
@@ -761,6 +764,106 @@ stack: python-lib
     assert status == 1
     assert "vague" in output
     assert "no testable assertion" in output
+
+
+def test_lint_flags_relational_threshold_without_boundary_acceptance(make_project):
+    project = make_project()
+    project.write_spec(
+        "bands",
+        """---
+module: bands
+description: classify ratios
+imports: []
+requires: []
+stack: python-lib
+---
+
+## definitions
+- Band: a label for a ratio.
+## implementation
+- Provide ratio_band(ratio) in the bands package.
+## test
+- pytest.
+## functional
+- id: FR1
+  title: classify near ratios
+  spec:
+    - ratio < 0.99 returns near.
+  acceptance:
+    - ratio_band(0.98) returns near.
+""",
+    )
+
+    status, output = workflow.lint_module("bands", root=project.root)
+
+    assert status == 1
+    assert "relational threshold 0.99 needs an exact-boundary acceptance example" in output
+
+
+def test_lint_accepts_exact_boundary_acceptance(make_project):
+    project = make_project()
+    project.write_spec(
+        "bands",
+        """---
+module: bands
+description: classify ratios
+imports: []
+requires: []
+stack: python-lib
+---
+
+## definitions
+- Band: a label for a ratio.
+## implementation
+- Provide ratio_band(ratio) in the bands package.
+## test
+- pytest.
+## functional
+- id: FR1
+  title: classify near ratios
+  spec:
+    - ratio < 0.99 returns near.
+  acceptance:
+    - ratio_band(0.99) returns medium.
+""",
+    )
+
+    status, output = workflow.lint_module("bands", root=project.root)
+
+    assert status == 0, output
+
+
+def test_lint_accepts_arrow_notation_as_testable_assertion(make_project):
+    project = make_project()
+    project.write_spec(
+        "switches",
+        """---
+module: switches
+description: switch predicates
+imports: []
+requires: []
+stack: python-lib
+---
+
+## definitions
+- Switch: boolean state.
+## implementation
+- Provide is_open(value) in the switches package.
+## test
+- pytest.
+## functional
+- id: FR1
+  title: truthy values are open
+  spec:
+    - is_open(value) returns true for truthy inputs.
+  acceptance:
+    - is_open(3) → true.
+""",
+    )
+
+    status, output = workflow.lint_module("switches", root=project.root)
+
+    assert status == 0, output
 
 
 def test_doctor_passes_for_demo_project(demo_project):

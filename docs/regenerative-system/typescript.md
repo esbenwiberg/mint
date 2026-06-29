@@ -58,6 +58,12 @@ Mint owns the test harness details around those files:
 - Conformance tests should import the current module by module name. If a
   generated conformance test imports `../src` or `../../src`, the adapter rewrites
   that import to the module name before running Vitest.
+- Explicit TypeScript-style signatures in backticked unit spec bullets are treated
+  as API contracts before tests run, scoped to units rendered so far. For example,
+  `matchByDefinition(resource, contract, fields): boolean` requires a generated
+  export with that name, parameter count/names, and return type; a bulk
+  `matchByDefinition(resources): Resource[]` fails before `tsc` or Vitest once
+  that unit is in scope. Free-text prose is not scraped for signatures.
 
 `package.json` must include npm-compatible scripts:
 
@@ -81,6 +87,10 @@ The TypeScript adapter runs `npm run typecheck`, then `npm run test:unit`, then
 <absolute conformance dir>`. Projects may use npm, pnpm, or another package
 manager to install dependencies, but the generated package must expose
 npm-compatible scripts.
+
+The prompt also tells the renderer to grow public APIs incrementally: do not create
+placeholder stubs for future functional units unless the current unit requires
+them.
 
 ## Required modules
 
@@ -120,6 +130,9 @@ The gate needs the generated package's dev tooling installed: `typescript` and
 tooling is missing the gate **hard-fails with a fix hint** instead of silently
 skipping. Discovery is overridable with `MINT_TS_MUTATION_FINDER_COMMAND` (the command
 reads `MINT_TS_SRC` and writes candidate spans as JSON to stdout).
+
+For multi-unit modules, coverage and mutation are deferred until the final
+functional unit. Acceptance traceability still runs per unit.
 
 ## Current limits
 

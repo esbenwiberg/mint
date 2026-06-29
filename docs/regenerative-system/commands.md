@@ -103,8 +103,10 @@ Generated TypeScript packages must provide npm-compatible scripts for
 
 ## `mint lint <module>`
 
-Check spec quality beyond parsing. The lint gate fails vague acceptance criteria and
-units with no testable assertion; it warns when no edge/error coverage hint is
+Check spec quality beyond parsing. The lint gate fails vague acceptance criteria,
+units with no testable assertion, and relational numeric thresholds that do not
+have an exact-boundary acceptance example. It accepts assertion phrasing such as
+`returns`, `==`, and `fn(x) → true`. It warns when no edge/error coverage hint is
 present.
 
 ```bash
