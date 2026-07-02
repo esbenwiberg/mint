@@ -150,6 +150,12 @@ _DURATION_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|seconds?|milliseconds?)\b"
 # style expressions are left alone) and Windows drive paths.
 _UNIX_PATH_RE = re.compile(r"(?<![\w])(?:/[\w.\-+@]+)+/?")
 _WIN_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s:'\"()]+")
+# Log/date timestamps like "2026-07-02 10:33:01,123" or "2026-07-02T10:33:01.4".
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?")
+# Object memory addresses like "<Foo object at 0x104f3a2b0>".
+_ADDR_RE = re.compile(r"0x[0-9a-fA-F]+")
+# pytest-xdist worker ids like "[gw3]".
+_XDIST_WORKER_RE = re.compile(r"\[gw\d+\]")
 
 
 def _require(mapping: Any, key: str, where: str) -> Any:
@@ -187,9 +193,14 @@ def normalize_feedback(feedback: str) -> str:
     for line in feedback.splitlines():
         if _is_noise_header(line):
             continue
+        # Timestamps first: strip them before path/duration passes so a date like
+        # 2026-07-02 can't be partially eaten by the path regex.
+        line = _TIMESTAMP_RE.sub("<TIMESTAMP>", line)
         line = _WIN_PATH_RE.sub("<PATH>", line)
         line = _UNIX_PATH_RE.sub("<PATH>", line)
         line = _DURATION_RE.sub("<DURATION>", line)
+        line = _ADDR_RE.sub("<ADDR>", line)
+        line = _XDIST_WORKER_RE.sub("[gw]", line)
         kept.append(line.rstrip())
     return "\n".join(kept).strip()
 
@@ -520,6 +531,37 @@ def _tail(text: str, limit: int = 4000) -> str:
 # thousands of tokens). 4096 silently truncated real patches and poisoned cassettes;
 # default high and stream so we never trip the SDK's non-streaming timeout guard.
 DEFAULT_ANTHROPIC_MAX_TOKENS = 32000
+# Explicit overall request timeout and retry count so a hung/slow API call can't
+# stall a render indefinitely, rather than silently inheriting whatever the SDK
+# default happens to be. Both overridable via env for slow links / large patches.
+DEFAULT_ANTHROPIC_TIMEOUT_SECONDS = 600.0
+DEFAULT_ANTHROPIC_MAX_RETRIES = 2
+
+
+def _anthropic_float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise MintError(f"{name} must be a number, got {raw!r}.") from exc
+    if value <= 0:
+        raise MintError(f"{name} must be greater than 0, got {value}.")
+    return value
+
+
+def _anthropic_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise MintError(f"{name} must be an integer, got {raw!r}.") from exc
+    if value < 0:
+        raise MintError(f"{name} must be >= 0, got {value}.")
+    return value
 
 
 class AnthropicModelClient:  # pragma: no cover - requires network + key
@@ -531,8 +573,6 @@ class AnthropicModelClient:  # pragma: no cover - requires network + key
         api_key: str | None = None,
         max_tokens: int = DEFAULT_ANTHROPIC_MAX_TOKENS,
     ) -> None:
-        import os
-
         try:
             import anthropic  # type: ignore
         except ImportError as exc:
@@ -548,8 +588,16 @@ class AnthropicModelClient:  # pragma: no cover - requires network + key
             )
         if max_tokens <= 0:
             raise MintError("Anthropic max_tokens must be greater than 0.")
+        timeout = _anthropic_float_env(
+            "MINT_ANTHROPIC_TIMEOUT_SECONDS", DEFAULT_ANTHROPIC_TIMEOUT_SECONDS
+        )
+        max_retries = _anthropic_int_env(
+            "MINT_ANTHROPIC_MAX_RETRIES", DEFAULT_ANTHROPIC_MAX_RETRIES
+        )
         self._anthropic = anthropic
-        self._client = anthropic.Anthropic(api_key=key)
+        self._client = anthropic.Anthropic(
+            api_key=key, timeout=timeout, max_retries=max_retries
+        )
         self._model = model
         self._max_tokens = max_tokens
 

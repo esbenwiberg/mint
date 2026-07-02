@@ -47,6 +47,7 @@ from .state import (
     append_render_log,
     fresh_metadata,
     load_metadata,
+    module_render_lock,
     now_iso,
     record_by_unit,
     refresh_metadata_hashes,
@@ -1690,7 +1691,32 @@ def render_single_module(
     root: Path | None = None,
     budget: BudgetTracker | None = None,
 ) -> tuple[int, str]:
+    # Hold a per-module lock across the whole render so two concurrent renders of
+    # the same module can't interleave checkpoint reset / cleanup / commit and
+    # corrupt state. The lock keys on the module's generated dir, so a module
+    # rendered both standalone and as another module's dependency still serializes.
     context = load_context(module, root)
+    with module_render_lock(context.generated_dir):
+        return _render_single_module_locked(
+            context,
+            from_unit,
+            unit_range,
+            force,
+            model_client=model_client,
+            budget=budget,
+        )
+
+
+def _render_single_module_locked(
+    context: ModuleContext,
+    from_unit: str | None,
+    unit_range: str | None,
+    force: bool,
+    *,
+    model_client: ModelClient | None,
+    budget: BudgetTracker | None = None,
+) -> tuple[int, str]:
+    module = context.module
     adapter = context.stack_adapter
     if budget is None:
         budget = BudgetTracker(

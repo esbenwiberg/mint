@@ -604,6 +604,34 @@ def test_normalize_feedback_strips_nondeterminism():
     assert "AssertionError: boom" in out  # the actual signal survives
 
 
+def test_normalize_feedback_strips_addresses_workers_and_timestamps():
+    # Beyond the pytest/vitest headers, these three noise sources also vary run to
+    # run and would otherwise break replay: object memory addresses, xdist worker
+    # ids, and log timestamps.
+    raw = (
+        "obj <Foo object at 0x104f3a2b0>\n"
+        "[gw3] PASSED tests/test_fr1.py::test_add\n"
+        "2026-07-02 10:33:01,123 checkpoint written\n"
+    )
+    out = normalize_feedback(raw)
+    assert "0x104f3a2b0" not in out and "<ADDR>" in out
+    assert "[gw3]" not in out and "[gw]" in out
+    assert "10:33:01" not in out and "<TIMESTAMP>" in out
+
+
+def test_cassette_id_stable_across_addresses_workers_and_timestamps():
+    fb1 = "at 0x104f3a2b0\n[gw3] boom\n2026-07-02 10:33:01,123 x"
+    fb2 = "at 0x7ffabc123\n[gw7] boom\n2026-07-03 23:59:59,999 x"
+    p1 = build_prompt(make_request(attempt=2, feedback=fb1), "v1")
+    p2 = build_prompt(make_request(attempt=2, feedback=fb2), "v1")
+    assert p1 == p2
+    assert cassette_id(
+        prompt_version="v1", request=make_request(attempt=2, feedback=fb1), prompt=p1
+    ) == cassette_id(
+        prompt_version="v1", request=make_request(attempt=2, feedback=fb2), prompt=p2
+    )
+
+
 def test_normalize_feedback_is_idempotent():
     raw = "FAILED at /tmp/x/test.py in 1.20s\n"
     once = normalize_feedback(raw)

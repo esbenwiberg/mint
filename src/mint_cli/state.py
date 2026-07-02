@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
+import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
-from typing import Any
+import tempfile
+from typing import Any, Iterator
 
 from .config import MintConfig
 from .errors import MintError
 from .hashing import hash_generated_files, hash_json
 from .specs import FunctionalUnit, Spec
+
+try:  # POSIX advisory locks; primary + CI platforms are all POSIX.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None  # type: ignore[assignment]
 
 
 def now_iso() -> str:
@@ -60,6 +68,53 @@ def write_metadata(module_dir: Path, metadata: dict[str, Any]) -> None:
         os.replace(tmp_path, path)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _render_lock_path(module_dir: Path) -> Path:
+    # The lock must live OUTSIDE module_dir. A full render rmtrees module_dir; if
+    # the lock file lived inside it, deleting it mid-render would drop the inode
+    # our flock is bound to, and a second process would create a fresh file and
+    # acquire a *different* lock — silently breaking mutual exclusion. Key a
+    # temp-dir lock file by the module dir's absolute path so two renders of the
+    # same module (standalone or pulled in as a dependency) map to the same file.
+    key = hashlib.sha256(str(module_dir.resolve()).encode("utf-8")).hexdigest()[:16]
+    lock_dir = Path(tempfile.gettempdir()) / "mint-render-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return lock_dir / f"{key}.lock"
+
+
+@contextmanager
+def module_render_lock(module_dir: Path) -> Iterator[None]:
+    """Serialize renders of a single module.
+
+    Two concurrent renders of the same module interleave checkpoint reset,
+    untracked-file cleanup and commit — clobbering module.json and the git tree
+    even though each individual write is atomic. Take a non-blocking advisory
+    lock and fail loudly rather than corrupt state. flock is released on fd close
+    or process exit, so a crashed render never leaves a stale lock behind.
+    """
+    if fcntl is None:  # pragma: no cover - non-POSIX best effort
+        yield
+        return
+    lock_path = _render_lock_path(module_dir)
+    handle = lock_path.open("w", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise MintError(
+                f"Another render of '{module_dir.name}' is already in progress "
+                f"(lock: {lock_path}). Wait for it to finish; if no render is "
+                "actually running, remove the lock file and retry."
+            ) from exc
+        try:
+            handle.write(f"{os.getpid()}\n")
+            handle.flush()
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def append_render_log(module_dir: Path, line: str) -> None:

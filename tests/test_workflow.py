@@ -1401,3 +1401,39 @@ def test_explicit_range_refuses_on_context_drift(make_project):
 
     with pytest.raises(MintError, match="context inputs changed"):
         workflow.determine_render_plan(context, metadata, None, "FR2:FR2", False, hashes)
+
+
+def test_module_render_lock_is_exclusive(tmp_path):
+    from mint_cli.state import module_render_lock
+
+    module_dir = tmp_path / "generated" / "calc"
+    module_dir.mkdir(parents=True)
+
+    with module_render_lock(module_dir):
+        # A second concurrent render of the same module must fail loudly, not
+        # silently interleave checkpoint reset / cleanup / commit and corrupt state.
+        with pytest.raises(MintError, match="already in progress"):
+            with module_render_lock(module_dir):
+                pass
+
+    # Once released, the lock is re-acquirable — no stale lock left behind.
+    with module_render_lock(module_dir):
+        pass
+
+
+def test_module_render_lock_survives_workspace_wipe(tmp_path):
+    # The lock lives outside module_dir, so wiping the workspace mid-hold (as a
+    # full render does) must not release it or break exclusion.
+    import shutil
+
+    from mint_cli.state import module_render_lock
+
+    module_dir = tmp_path / "generated" / "calc"
+    module_dir.mkdir(parents=True)
+
+    with module_render_lock(module_dir):
+        shutil.rmtree(module_dir)
+        module_dir.mkdir(parents=True)
+        with pytest.raises(MintError, match="already in progress"):
+            with module_render_lock(module_dir):
+                pass
