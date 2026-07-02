@@ -11,12 +11,106 @@ import shlex
 import shutil
 import subprocess
 import sys
+from uuid import uuid4
 from typing import Any, Protocol
 
 from .errors import MintError
 
 
 PYTEST_NO_TESTS = 5
+
+# Subprocesses below run untrusted, model-generated code. Without a wall-clock
+# ceiling an LLM-authored infinite loop hangs Mint forever (and the mutation probe
+# multiplies each run by mutation_max_candidates). There is no timeout field in the
+# config schema yet, so defaults live here and are overridable per-invocation via
+# env vars. CROSS-AGENT ASSUMPTION: if a `limits.*TimeoutSeconds` config lands, wire
+# it into `_timeout_seconds` without changing call sites.
+_DEFAULT_TEST_TIMEOUT = 300.0
+_DEFAULT_INSTALL_TIMEOUT = 600.0
+_DEFAULT_PROBE_TIMEOUT = 60.0
+# Exit code we synthesize for a timed-out / unlaunchable command.
+_TIMEOUT_RETURNCODE = 124
+_MISSING_BINARY_RETURNCODE = 127
+
+
+def _timeout_seconds(env_var: str, default: float) -> float | None:
+    """Resolve a subprocess timeout in seconds. `<=0` or unparsable disables it."""
+    raw = os.environ.get(env_var)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else None
+
+
+def _run_capture(
+    command: list[str],
+    *,
+    cwd: Any = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command capturing text output, turning timeouts and a missing binary
+    into a failed CompletedProcess instead of an exception so callers get retryable
+    feedback rather than a hard crash."""
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = _as_text(exc.stdout)
+        err = _as_text(exc.stderr)
+        label = " ".join(str(part) for part in command)
+        err = (
+            err
+            + f"\nmint: command timed out after {timeout:g}s and was killed: {label}\n"
+            "(fix: the generated code likely hangs — bound loops/IO, or raise "
+            "MINT_TEST_TIMEOUT_SECONDS if the workload is legitimately long)\n"
+        )
+        return subprocess.CompletedProcess(command, _TIMEOUT_RETURNCODE, out, err)
+    except OSError as exc:
+        # e.g. the binary is absent (FileNotFoundError) — do not let this crash the
+        # caller; surface it so the "X is required" branch stays reachable.
+        return subprocess.CompletedProcess(
+            command,
+            _MISSING_BINARY_RETURNCODE,
+            "",
+            f"mint: could not execute {command[0]!r}: {exc}\n",
+        )
+
+
+def _as_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def _probe_binary(binary: str, *, cwd: Any = None) -> subprocess.CompletedProcess[str]:
+    """`<binary> --version`, guarded so an absent binary yields a non-zero result
+    (not a FileNotFoundError traceback that would kill `mint doctor`)."""
+    if shutil.which(binary) is None:
+        return subprocess.CompletedProcess(
+            [binary, "--version"],
+            _MISSING_BINARY_RETURNCODE,
+            "",
+            f"{binary} not found on PATH\n",
+        )
+    return _run_capture(
+        [binary, "--version"],
+        cwd=cwd,
+        timeout=_timeout_seconds("MINT_PROBE_TIMEOUT_SECONDS", _DEFAULT_PROBE_TIMEOUT),
+    )
 
 
 @dataclass(frozen=True)
@@ -219,16 +313,7 @@ class PythonStackAdapter:
         )
 
     def script_env(self, context: Any, required_paths: list[Path]) -> dict[str, str]:
-        env = os.environ.copy()
-        env["MINT_GENERATED_DIR"] = str(context.generated_dir)
-        env["MINT_CONFORMANCE_DIR"] = str(context.conformance_dir)
-        if required_paths:
-            env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(path) for path in required_paths)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["MINT_SKIP_PYTEST_VERSION_CHECK"] = "1"
-        env.setdefault("PYTHONPYCACHEPREFIX", "/private/tmp/mint-pycache")
-        env.setdefault("PYTHON_BIN", sys.executable)
-        return env
+        return script_env(context, required_paths)
 
 
 class TypeScriptStackAdapter:
@@ -244,14 +329,7 @@ class TypeScriptStackAdapter:
         messages = [f"Stack adapter: {self.name} ({context.spec.stack})"]
         failures: list[str] = []
         for binary in ["node", "npm"]:
-            result = subprocess.run(
-                [binary, "--version"],
-                cwd=context.root,
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            result = _probe_binary(binary, cwd=context.root)
             if result.returncode == 0:
                 messages.append(f"{binary}: {result.stdout.strip()}")
             else:
@@ -268,15 +346,16 @@ class TypeScriptStackAdapter:
     def prepare(self, context: Any) -> subprocess.CompletedProcess[str]:
         outputs: list[str] = []
         for binary in ["node", "npm"]:
-            result = subprocess.run(
-                [binary, "--version"],
-                cwd=context.root,
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            result = _probe_binary(binary, cwd=context.root)
             if result.returncode != 0:
+                if not result.stderr.strip():
+                    result = subprocess.CompletedProcess(
+                        result.args,
+                        result.returncode,
+                        result.stdout,
+                        f"{binary} is required for {context.spec.stack} "
+                        "(fix: install Node.js with npm, then rerun).\n",
+                    )
                 return result
             outputs.append(f"{binary}: {result.stdout.strip()}")
         return subprocess.CompletedProcess(
@@ -309,7 +388,9 @@ class TypeScriptStackAdapter:
         typecheck = self._run_npm_script(context, "typecheck", required_order=required_order)
         if typecheck.returncode != 0:
             return typecheck
-        unit = self._run_npm_script(context, "test:unit", required_order=required_order)
+        unit = self._run_npm_script(
+            context, "test:unit", required_order=required_order, enforce_tests=True
+        )
         return _combine_completed([typecheck, unit], args=["npm", "run", "typecheck+test:unit"])
 
     def run_conformance_tests(
@@ -327,6 +408,7 @@ class TypeScriptStackAdapter:
             str(config_path),
             str(context.conformance_dir),
             required_order=required_order,
+            enforce_tests=True,
         )
 
     def classify_test_result(
@@ -335,7 +417,9 @@ class TypeScriptStackAdapter:
         if result.returncode == 0:
             return "passed"
         output = (result.stdout + "\n" + result.stderr).lower()
-        if "no test files" in output or "no tests" in output or "no test suite" in output:
+        # Match only vitest's exact "no test files" phrasing; loose "no tests"
+        # substrings misclassify genuine failures whose output happens to mention it.
+        if "no test files found" in output:
             return "no_tests"
         return f"{phase}_failed"
 
@@ -355,7 +439,7 @@ class TypeScriptStackAdapter:
                     path
                     for pattern in ("*.ts", "*.tsx")
                     for path in src.rglob(pattern)
-                    if path.is_file() and not path.name.endswith(".d.ts.map")
+                    if path.is_file() and not path.name.endswith(".d.ts")
                 )
             )
         return files
@@ -394,17 +478,28 @@ class TypeScriptStackAdapter:
         return hints
 
     def cleanup_runtime_caches(self, *roots: Path) -> None:
+        # Only known, top-level cache locations. A recursive rglob for "coverage" /
+        # ".vite" / ".vitest" would happily rmtree a legitimate `src/coverage/` module
+        # directory, destroying generated source and breaking the code hash.
         for root in roots:
             _remove_python_caches(root)
             if not root.exists():
                 continue
-            for cache in [".vite", ".vitest", "coverage"]:
-                for path in root.rglob(cache):
-                    if path.is_dir():
-                        shutil.rmtree(path, ignore_errors=True)
-                    elif path.exists():
-                        path.unlink(missing_ok=True)
-            for path in root.rglob("*.tsbuildinfo"):
+            cache_paths = [
+                root / ".vite",
+                root / ".vitest",
+                root / "coverage",
+                root / ".nyc_output",
+                root / "node_modules" / ".vite",
+                root / "node_modules" / ".vitest",
+                root / "node_modules" / ".cache",
+            ]
+            for path in cache_paths:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                elif path.exists():
+                    path.unlink(missing_ok=True)
+            for path in root.glob("*.tsbuildinfo"):
                 path.unlink(missing_ok=True)
 
     def wire_required_modules(self, context: Any, required_order: tuple[str, ...]) -> None:
@@ -444,8 +539,12 @@ class TypeScriptStackAdapter:
     def prepare_typecheck_harness(self, context: Any) -> None:
         tsconfig_path = context.generated_dir / "tsconfig.json"
         if tsconfig_path.exists():
+            # tsconfig.json is JSONC: comments and trailing commas are legal and LLMs
+            # emit them routinely. Strip them before strict JSON parsing so ordinary
+            # generated configs don't hard-abort the render.
+            raw = tsconfig_path.read_text(encoding="utf-8")
             try:
-                config = json.loads(tsconfig_path.read_text(encoding="utf-8"))
+                config = json.loads(_strip_jsonc(raw))
             except json.JSONDecodeError as exc:
                 raise MintError(f"Generated tsconfig.json is invalid JSON: {exc}") from exc
             if not isinstance(config, dict):
@@ -479,12 +578,16 @@ class TypeScriptStackAdapter:
             f"      {json.dumps(name)}: {json.dumps(target)},\n"
             for name, target in sorted(aliases.items())
         )
+        # Vitest roots this config at context.root, so the include glob must be derived
+        # from the configured conformance dir (not hardcoded 'conformance/**').
+        conf_rel = os.path.relpath(context.conformance_dir, context.root).replace(os.sep, "/")
+        include_glob = f"{conf_rel}/**/*.test.ts"
         contents = (
             "import { defineConfig } from 'vitest/config';\n\n"
             "export default defineConfig({\n"
             f"  root: {json.dumps(str(context.root))},\n"
             "  test: {\n"
-            "    include: ['conformance/**/*.test.ts'],\n"
+            f"    include: ['{include_glob}'],\n"
             "  },\n"
             "  resolve: {\n"
             "    alias: {\n"
@@ -519,6 +622,11 @@ class TypeScriptStackAdapter:
         if not expected:
             return []
         actual = _typescript_source_signatures(context.generated_dir / "src")
+        if actual is None:
+            # The TS compiler could not parse the sources (tooling missing or a parse
+            # error). We cannot verify signatures — skip rather than emit bogus
+            # "no generated export named X" failures for code we simply didn't read.
+            return []
         failures: list[str] = []
         for signature in expected:
             generated = actual.get(signature.name)
@@ -544,6 +652,7 @@ class TypeScriptStackAdapter:
         script: str,
         *extra_args: str,
         required_order: tuple[str, ...],
+        enforce_tests: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         package_path = context.generated_dir / "package.json"
         if not package_path.exists():
@@ -565,20 +674,56 @@ class TypeScriptStackAdapter:
                 stdout="",
                 stderr="\n".join(failures) + "\n",
             )
+        install = self._ensure_dependencies_installed(context)
+        if install is not None:
+            # Dependency install failed (bad/unresolvable deps, or npm error). Surface
+            # it as retryable gate feedback instead of falling through to run scripts
+            # against a broken/absent node_modules.
+            return install
         env = self.script_env(context, self.required_runtime_paths(context, required_order))
         command = ["npm", "run", script]
-        if extra_args:
+        passthrough = list(extra_args)
+        report_path: Path | None = None
+        if enforce_tests:
+            report_path = context.generated_dir / f".mint-vitest-{uuid4().hex}.json"
+            passthrough.extend(
+                ["--reporter=default", "--reporter=json", f"--outputFile.json={report_path}"]
+            )
+        if passthrough:
             command.append("--")
-            command.extend(extra_args)
-        return subprocess.run(
+            command.extend(passthrough)
+        result = _run_capture(
             command,
             cwd=context.generated_dir,
             env=env,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            timeout=_timeout_seconds("MINT_TEST_TIMEOUT_SECONDS", _DEFAULT_TEST_TIMEOUT),
         )
+        if report_path is not None:
+            result = self._enforce_nonzero_test_count(result, report_path, script)
+        return result
+
+    def _enforce_nonzero_test_count(
+        self,
+        result: subprocess.CompletedProcess[str],
+        report_path: Path,
+        script: str,
+    ) -> subprocess.CompletedProcess[str]:
+        """Fail a "passing" run that executed zero tests. The vitest JSON reporter is
+        authoritative here; a substring check on human output is trivially gamed by
+        `--passWithNoTests`. If no report was produced (e.g. tooling stubbed out) we
+        leave the result untouched rather than guess."""
+        count = _vitest_test_count(report_path)
+        report_path.unlink(missing_ok=True)
+        if result.returncode == 0 and count == 0:
+            return subprocess.CompletedProcess(
+                result.args,
+                1,
+                result.stdout,
+                (result.stderr or "")
+                + f"\nmint: {script} reported 0 executed tests. Zero tests cannot "
+                "satisfy the gate — add real tests (do not use --passWithNoTests).\n",
+            )
+        return result
 
     def script_env(self, context: Any, required_paths: list[Path]) -> dict[str, str]:
         env = os.environ.copy()
@@ -619,11 +764,95 @@ class TypeScriptStackAdapter:
             value = scripts.get(name)
             if not isinstance(value, str) or not value.strip():
                 failures.append(f"Generated package.json is missing script {name!r}.")
-            elif expected not in " ".join(value.split()):
+                continue
+            if expected not in " ".join(value.split()):
                 failures.append(
                     f"Generated package.json script {name!r} must invoke `{expected}`."
                 )
+            if "--passwithnotests" in value.lower():
+                failures.append(
+                    f"Generated package.json script {name!r} must not use "
+                    "`--passWithNoTests`: a run with zero tests must fail the gate."
+                )
+            metachars = sorted({ch for ch in value if ch in _SHELL_METACHARACTERS})
+            if metachars:
+                failures.append(
+                    f"Generated package.json script {name!r} must be a single command; "
+                    f"remove shell metacharacters ({' '.join(metachars)}). Chaining "
+                    "(`&&`, `||`, `;`, pipes) can mask test failures."
+                )
         return failures
+
+    def _dependency_signature(self, package_path: Path) -> str:
+        try:
+            package = json.loads(package_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return ""
+        if not isinstance(package, dict):
+            return ""
+        relevant = {
+            key: package.get(key)
+            for key in (
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+            )
+            if isinstance(package.get(key), dict)
+        }
+        return json.dumps(relevant, sort_keys=True)
+
+    def _ensure_dependencies_installed(
+        self, context: Any
+    ) -> subprocess.CompletedProcess[str] | None:
+        """Install npm dependencies into the generated module so file:-linked required
+        modules and dev tooling resolve. Returns None on success; a failed
+        CompletedProcess when the install itself failed (retryable feedback). Raises
+        MintError only when install "succeeds" yet node_modules is still absent — an
+        environment fault we must not paper over by falling back to global tooling.
+
+        A full render rmtrees the generated dir (wiping node_modules), so install must
+        happen lazily here, after package.json is written/wired — not in prepare()."""
+        generated = context.generated_dir
+        package_path = generated / "package.json"
+        if not package_path.exists():
+            # Missing package.json is reported by the caller with an actionable message.
+            return None
+        node_modules = generated / "node_modules"
+        marker = generated / ".mint-npm-install.json"
+        signature = self._dependency_signature(package_path)
+        if node_modules.exists() and marker.exists():
+            try:
+                if marker.read_text(encoding="utf-8") == signature:
+                    return None
+            except OSError:
+                pass
+        override = os.environ.get("MINT_TS_INSTALL_COMMAND")
+        command = (
+            shlex.split(override)
+            if override
+            else ["npm", "install", "--no-audit", "--no-fund", "--no-progress"]
+        )
+        result = _run_capture(
+            command,
+            cwd=generated,
+            env=self.script_env(context, []),
+            timeout=_timeout_seconds("MINT_INSTALL_TIMEOUT_SECONDS", _DEFAULT_INSTALL_TIMEOUT),
+        )
+        if result.returncode != 0:
+            return result
+        if not node_modules.exists():
+            raise MintError(
+                "npm install reported success but node_modules is missing under "
+                f"{generated}. Fix: check disk space and permissions, and that "
+                "package.json dependencies resolve; Mint refuses to run tests against "
+                "un-installed dependencies (which would silently use global tooling)."
+            )
+        try:
+            marker.write_text(signature, encoding="utf-8")
+        except OSError:
+            pass
+        return None
 
     # ---- test-quality (coverage + mutation) -------------------------------- #
 
@@ -709,6 +938,20 @@ class TypeScriptStackAdapter:
                         "stdout": result.stdout,
                         "stderr": result.stderr,
                     }
+                if result.returncode != 0:
+                    # A report can exist from a partial run even though tests failed;
+                    # trusting it would let a failing suite report coverage.
+                    return {
+                        "status": "failed",
+                        "reason": f"{target} tests failed during coverage run "
+                        f"(exit {result.returncode})",
+                        "threshold": threshold,
+                        "percent": 0.0,
+                        "coveredLines": 0,
+                        "totalLines": 0,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                    }
                 for rel, (hit, total) in _collect_istanbul_coverage(report_path, src_dir).items():
                     totals[rel] = total
                     covered.setdefault(rel, set()).update(hit)
@@ -727,6 +970,21 @@ class TypeScriptStackAdapter:
         ]
         covered_total = sum(item["coveredLines"] for item in files)
         line_total = sum(item["totalLines"] for item in files)
+        if not files or line_total == 0:
+            # No measurable generated-source statements: an empty denominator must fail
+            # rather than sail through as a vacuous 100%.
+            return {
+                "status": "failed",
+                "reason": (
+                    "coverage measured no generated source statements under src/ "
+                    "(ensure tests import the generated module so its code is executed)"
+                ),
+                "threshold": threshold,
+                "percent": 0.0,
+                "coveredLines": 0,
+                "totalLines": 0,
+                "files": files,
+            }
         percent = (covered_total / line_total * 100.0) if line_total else 100.0
         verdict: dict[str, Any] = {
             "status": "passed" if percent >= threshold else "failed",
@@ -847,14 +1105,11 @@ class TypeScriptStackAdapter:
         command = shlex.split(override) if override else ["node", "-e", _TS_MUTATION_FINDER]
         env = os.environ.copy()
         env["MINT_TS_SRC"] = str(src_dir)
-        result = subprocess.run(
+        result = _run_capture(
             command,
             cwd=context.generated_dir,
             env=env,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            timeout=_timeout_seconds("MINT_PROBE_TIMEOUT_SECONDS", _DEFAULT_PROBE_TIMEOUT),
         )
         if result.returncode != 0:
             return None
@@ -869,10 +1124,7 @@ class TypeScriptStackAdapter:
             try:
                 file_path = Path(item["file"]).resolve()
                 rel = file_path.relative_to(src_dir.resolve()).as_posix()
-            except (KeyError, TypeError, ValueError, OSError):
-                continue
-            candidates.append(
-                {
+                record = {
                     "file": str(file_path),
                     "rel": rel,
                     "name": str(item.get("name", rel)),
@@ -880,7 +1132,9 @@ class TypeScriptStackAdapter:
                     "bodyEnd": int(item["bodyEnd"]),
                     "line": int(item.get("line", 0)),
                 }
-            )
+            except (KeyError, TypeError, ValueError, OSError):
+                continue
+            candidates.append(record)
         return sorted(candidates, key=lambda item: (item["rel"], item["bodyStart"], item["name"]))
 
     def _ts_mutate_and_test(
@@ -891,9 +1145,15 @@ class TypeScriptStackAdapter:
         config_path: Path,
     ) -> bool:
         path = Path(candidate["file"])
-        original = path.read_text(encoding="utf-8")
+        # Read/write with newline="" so CRLF is preserved byte-for-byte: the finder's
+        # offsets are measured over the raw file, and universal-newline translation
+        # would shift every position after a CRLF and rewrite line endings on restore
+        # (drifting the code hash).
+        with open(path, "r", encoding="utf-8", newline="") as handle:
+            original = handle.read()
         try:
-            path.write_text(_ts_mutated_source(original, candidate), encoding="utf-8")
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(_ts_mutated_source(original, candidate))
             self.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
             unit = self._run_npm_script(context, "test:unit", required_order=required_order)
             if unit.returncode != 0:
@@ -908,7 +1168,8 @@ class TypeScriptStackAdapter:
             )
             return conf.returncode != 0
         finally:
-            path.write_text(original, encoding="utf-8")
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(original)
             self.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
 
 
@@ -930,11 +1191,27 @@ def known_stacks() -> list[str]:
     return sorted(name for adapter in _ADAPTERS for name in adapter.stack_names)
 
 
+def script_env(context: Any, required_paths: list[Path]) -> dict[str, str]:
+    """Canonical environment for running Python project scripts and the coverage
+    trace. Public so the render engine (workflow.py) can import it instead of keeping
+    a drifted duplicate."""
+    env = os.environ.copy()
+    env["MINT_GENERATED_DIR"] = str(context.generated_dir)
+    env["MINT_CONFORMANCE_DIR"] = str(context.conformance_dir)
+    if required_paths:
+        env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(path) for path in required_paths)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["MINT_SKIP_PYTEST_VERSION_CHECK"] = "1"
+    env.setdefault("PYTHON_BIN", sys.executable)
+    return env
+
+
 def _run_project_script(
     context: Any,
     script: str,
     *,
     env: dict[str, str],
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     path = context.root / script
     if not path.exists():
@@ -945,14 +1222,13 @@ def _run_project_script(
         )
     if not os.access(path, os.X_OK):
         raise MintError(f"Configured script is not executable: {script}. Fix: chmod +x {script}.")
-    return subprocess.run(
+    if timeout is None:
+        timeout = _timeout_seconds("MINT_TEST_TIMEOUT_SECONDS", _DEFAULT_TEST_TIMEOUT)
+    return _run_capture(
         [str(path), context.module],
         cwd=context.root,
         env=env,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        timeout=timeout,
     )
 
 
@@ -991,21 +1267,10 @@ _TS_SIGNATURE_SPACED_RE = re.compile(
     r"\((?P<params>[^()]*)\)\s*:\s*"
     r"(?P<return>[A-Za-z_$][A-Za-z0-9_$.\[\]<>|&?,{} ]*)"
 )
-_TS_EXPORT_FUNCTION_RE = re.compile(
-    r"\bexport\s+(?:async\s+)?function\s+"
-    r"(?P<name>[A-Za-z_$][\w$]*)\s*"
-    r"\((?P<params>[^()]*)\)\s*"
-    r"(?::\s*(?P<return>[^{;\n]+))?",
-    re.MULTILINE,
-)
-_TS_EXPORT_ARROW_RE = re.compile(
-    r"\bexport\s+const\s+"
-    r"(?P<name>[A-Za-z_$][\w$]*)\s*"
-    r"(?::[^=]+)?=\s*(?:async\s*)?"
-    r"(?:\((?P<params>[^()]*)\)|(?P<single>[A-Za-z_$][\w$]*))\s*"
-    r"(?::\s*(?P<return>[^=;\n]+))?\s*=>",
-    re.MULTILINE,
-)
+
+# Shell metacharacters forbidden in the required package.json scripts. Present so a
+# generated script like `vitest run || true` (which masks failures) is rejected.
+_SHELL_METACHARACTERS = frozenset(";|&`$<>\n\r()")
 
 
 def _typescript_spec_signatures(
@@ -1039,39 +1304,54 @@ def _typescript_spec_signatures(
     return signatures
 
 
-def _typescript_source_signatures(src_dir: Path) -> dict[str, TypeScriptSignature]:
-    signatures: dict[str, TypeScriptSignature] = {}
+def _typescript_source_signatures(src_dir: Path) -> dict[str, TypeScriptSignature] | None:
+    """Extract exported function signatures from generated sources using the TS
+    compiler AST (via node), the same technique the mutation finder uses. Regex
+    extraction false-fails ordinary TypeScript (generics, function-typed params,
+    object-literal return types, typed arrow consts). Returns None when the parse
+    could not run at all so the caller skips validation instead of blocking.
+    """
     if not src_dir.exists():
-        return signatures
-    for path in sorted(src_dir.rglob("*.ts")):
-        if path.name.endswith(".d.ts"):
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        rel = path.relative_to(src_dir).as_posix()
-        for match in _TS_EXPORT_FUNCTION_RE.finditer(text):
-            signature = _signature_from_match(match, rel)
-            signatures.setdefault(signature.name, signature)
-        for match in _TS_EXPORT_ARROW_RE.finditer(text):
-            params = match.group("params")
-            if params is None:
-                params = match.group("single") or ""
-            signature = TypeScriptSignature(
-                name=match.group("name"),
-                params=tuple(_parse_ts_params(params)),
-                return_type=_clean_ts_type(match.group("return")),
-                source=rel,
-            )
-            signatures.setdefault(signature.name, signature)
-    return signatures
-
-
-def _signature_from_match(match: re.Match[str], source: str) -> TypeScriptSignature:
-    return TypeScriptSignature(
-        name=match.group("name"),
-        params=tuple(_parse_ts_params(match.group("params") or "")),
-        return_type=_clean_ts_type(match.group("return")),
-        source=source,
+        return {}
+    override = os.environ.get("MINT_TS_SIGNATURE_FINDER_COMMAND")
+    command = shlex.split(override) if override else ["node", "-e", _TS_SIGNATURE_FINDER]
+    env = os.environ.copy()
+    env["MINT_TS_SRC"] = str(src_dir)
+    result = _run_capture(
+        command,
+        cwd=src_dir,
+        env=env,
+        timeout=_timeout_seconds("MINT_PROBE_TIMEOUT_SECONDS", _DEFAULT_PROBE_TIMEOUT),
     )
+    if result.returncode != 0:
+        return None
+    try:
+        raw = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, list):
+        return None
+    signatures: dict[str, TypeScriptSignature] = {}
+    for item in raw:
+        if not isinstance(item, dict) or "name" not in item:
+            continue
+        params: list[TypeScriptParam] = []
+        for param in item.get("params", []) or []:
+            if not isinstance(param, dict):
+                continue
+            name = str(param.get("name", "")).strip()
+            if name.startswith("..."):
+                name = name[3:].strip()
+            name = name.rstrip("?").strip()
+            params.append(TypeScriptParam(name=name, type=_clean_ts_type(param.get("type"))))
+        signature = TypeScriptSignature(
+            name=str(item["name"]),
+            params=tuple(params),
+            return_type=_clean_ts_type(item.get("returnType")),
+            source=str(item.get("source", "")),
+        )
+        signatures.setdefault(signature.name, signature)
+    return signatures
 
 
 def _parse_ts_signature(candidate: str, *, source: str) -> TypeScriptSignature | None:
@@ -1185,6 +1465,48 @@ def _normalize_ts_type(value: str | None) -> str:
     return re.sub(r"\s+", "", value or "")
 
 
+def _strip_jsonc(text: str) -> str:
+    """Strip // and /* */ comments and trailing commas from JSONC (tsconfig.json)
+    while preserving the contents of double-quoted strings."""
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    in_string = False
+    while index < length:
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if char == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "/":
+            index += 2
+            while index < length and text[index] not in "\r\n":
+                index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "*":
+            index += 2
+            while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    stripped = "".join(out)
+    # Drop trailing commas before a closing } or ].
+    return re.sub(r",(\s*[}\]])", r"\1", stripped)
+
+
 def _typescript_signature_mismatch(
     expected: TypeScriptSignature, actual: TypeScriptSignature
 ) -> str | None:
@@ -1247,6 +1569,31 @@ _TS_COVERAGE_MISSING_TOKENS = (
 )
 
 
+def _vitest_test_count(report_path: Path) -> int | None:
+    """Total executed tests from a vitest JSON report, or None if unavailable.
+    None means "could not determine" (report absent/unparsable) — callers must not
+    treat that as zero."""
+    try:
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("numTotalTests", "numTotalTestSuites"):
+        value = data.get(key)
+        if isinstance(value, int):
+            return value
+    results = data.get("testResults")
+    if isinstance(results, list):
+        total = 0
+        for suite in results:
+            assertions = suite.get("assertionResults") if isinstance(suite, dict) else None
+            if isinstance(assertions, list):
+                total += len(assertions)
+        return total
+    return None
+
+
 def _collect_istanbul_coverage(
     report_path: Path, src_dir: Path
 ) -> dict[str, tuple[set[str], int]]:
@@ -1275,10 +1622,18 @@ def _collect_istanbul_coverage(
 
 
 def _ts_mutated_source(source: str, candidate: dict[str, Any]) -> str:
-    start = candidate["bodyStart"]
-    end = candidate["bodyEnd"]
-    throw = f'\nthrow new Error("mint mutation probe: {candidate["name"]}");\n'
-    return source[:start] + throw + source[end:]
+    # The TypeScript compiler reports positions as UTF-16 code-unit offsets over the
+    # raw file text. Python str indices are code points, so slicing `source` directly
+    # misplaces the insertion whenever astral characters (e.g. an emoji in a comment)
+    # precede the body. Slice over the UTF-16-LE encoding so offsets line up exactly.
+    units = source.encode("utf-16-le")
+    start = max(0, candidate["bodyStart"] * 2)
+    end = min(len(units), candidate["bodyEnd"] * 2)
+    if start > end:
+        start = end
+    name = str(candidate["name"]).replace("\\", "\\\\").replace('"', '\\"')
+    throw = f'\nthrow new Error("mint mutation probe: {name}");\n'.encode("utf-16-le")
+    return (units[:start] + throw + units[end:]).decode("utf-16-le")
 
 
 # Emits one JSON record per mutatable exported function/method body span.
@@ -1319,6 +1674,67 @@ function scan(file) {
         if (ts.isMethodDeclaration(m) && m.name) {
           const nm = m.name.getText(sf);
           if (!nm.startsWith('_')) record(node.name.text + '.' + nm, m.body, file, sf);
+        }
+      });
+    }
+  });
+}
+function walk(dir) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walk(p);
+    else if (/\.tsx?$/.test(e.name) && !e.name.endsWith('.d.ts')) scan(p);
+  }
+}
+walk(srcDir);
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+# Emits one JSON record per exported function/const-arrow signature using the TS
+# compiler AST. Records: { name, params:[{name,type}], returnType, source }.
+_TS_SIGNATURE_FINDER = r"""
+const ts = require('typescript');
+const fs = require('fs');
+const path = require('path');
+const srcDir = process.env.MINT_TS_SRC;
+const out = [];
+function exported(node) {
+  const mods = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+  return !!(mods && mods.some(m => m.kind === ts.SyntaxKind.ExportKeyword));
+}
+function typeText(node, sf) {
+  return node ? node.getText(sf).replace(/\s+/g, ' ').trim() : null;
+}
+function collectParams(fn, sf) {
+  return fn.parameters.map(p => ({
+    name: p.name ? p.name.getText(sf) : '',
+    type: p.type ? typeText(p.type, sf) : null,
+  }));
+}
+function rel(file) {
+  return path.relative(srcDir, file).split(path.sep).join('/');
+}
+function push(name, fn, sf, file) {
+  if (!fn) return;
+  out.push({
+    name,
+    params: collectParams(fn, sf),
+    returnType: fn.type ? typeText(fn.type, sf) : null,
+    source: rel(file),
+  });
+}
+function scan(file) {
+  const text = fs.readFileSync(file, 'utf8');
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  sf.forEachChild(node => {
+    if (ts.isFunctionDeclaration(node) && node.name && exported(node)) {
+      push(node.name.text, node, sf, file);
+    } else if (ts.isVariableStatement(node) && exported(node)) {
+      node.declarationList.declarations.forEach(d => {
+        const nm = d.name && d.name.getText(sf);
+        if (nm && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) {
+          push(nm, d.initializer, sf, file);
         }
       });
     }

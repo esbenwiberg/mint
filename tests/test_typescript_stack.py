@@ -145,6 +145,86 @@ sys.stdout.write(json.dumps(out))
 """
 
 
+# A Python stand-in for the `node` TypeScript-compiler signature finder. Mirrors the
+# real finder's contract: read MINT_TS_SRC, emit one JSON record per exported function
+# signature with { name, params:[{name,type}], returnType, source }.
+_SIGNATURE_FINDER_STUB = r"""
+import json, os, re, sys
+from pathlib import Path
+
+src = Path(os.environ["MINT_TS_SRC"])
+
+
+def split_top_level(text):
+    parts, depth, start, quote = [], 0, 0, None
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    closers = set(pairs.values())
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"`":
+            quote = ch
+        elif ch in pairs:
+            depth += 1
+        elif ch in closers and depth > 0:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p for p in parts if p.strip()]
+
+
+def parse_params(raw):
+    out = []
+    for item in split_top_level(raw):
+        item = item.strip()
+        name, _, typ = item.partition(":")
+        name = name.strip().rstrip("?").strip()
+        if name.startswith("..."):
+            name = name[3:].strip()
+        out.append({"name": name, "type": typ.strip() or None})
+    return out
+
+
+def find_paren(text, open_idx):
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+out = []
+pattern = re.compile(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(")
+for path in sorted(list(src.rglob("*.ts")) + list(src.rglob("*.tsx"))):
+    if path.name.endswith(".d.ts"):
+        continue
+    text = path.read_text(encoding="utf-8")
+    rel = path.relative_to(src).as_posix()
+    for match in pattern.finditer(text):
+        name = match.group(1)
+        open_idx = match.end() - 1
+        close_idx = find_paren(text, open_idx)
+        if close_idx < 0:
+            continue
+        params = parse_params(text[open_idx + 1:close_idx])
+        rest = text[close_idx + 1:]
+        ret = None
+        rmatch = re.match(r"\s*:\s*([^{;\n]+)", rest)
+        if rmatch:
+            ret = rmatch.group(1).strip()
+        out.append({"name": name, "params": params, "returnType": ret, "source": rel})
+sys.stdout.write(json.dumps(out))
+"""
+
+
 def install_ts_tool_stubs(root: Path, monkeypatch) -> Path:
     bin_dir = root / "tool-bin"
     bin_dir.mkdir()
@@ -195,8 +275,24 @@ def install_ts_tool_stubs(root: Path, monkeypatch) -> Path:
 
     finder = bin_dir / "ts_finder.py"
     finder.write_text(_FINDER_STUB, encoding="utf-8")
+
+    # Stand-in for the `node` TS-compiler signature finder (production uses the TS AST;
+    # here typescript is not installed). Mirrors its contract: read MINT_TS_SRC and
+    # emit one JSON record per exported function signature.
+    sig_finder = bin_dir / "ts_sig_finder.py"
+    sig_finder.write_text(_SIGNATURE_FINDER_STUB, encoding="utf-8")
+
+    # Stand-in for `npm install`: real npm would hit the network. Mint only requires
+    # that node_modules exist after the install step, so create it.
+    install_stub = bin_dir / "npm_install_stub.py"
+    install_stub.write_text(
+        "import os\nos.makedirs('node_modules', exist_ok=True)\n", encoding="utf-8"
+    )
+
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("MINT_TS_MUTATION_FINDER_COMMAND", f"{sys.executable} {finder}")
+    monkeypatch.setenv("MINT_TS_SIGNATURE_FINDER_COMMAND", f"{sys.executable} {sig_finder}")
+    monkeypatch.setenv("MINT_TS_INSTALL_COMMAND", f"{sys.executable} {install_stub}")
     return log
 
 
@@ -324,7 +420,9 @@ def test_typescript_model_render_runs_typecheck_vitest_and_reports(make_project,
         project.root / ".mint" / "generated" / "calc-ts" / "vitest.conformance.config.ts"
     ).read_text(encoding="utf-8")
     assert f"root: {json.dumps(str(project.root))}" in config_text
-    assert "include: ['conformance/**/*.test.ts']" in config_text
+    # Glob is derived from the configured conformance dir (conformanceDir/module),
+    # not hardcoded, so a non-default conformanceDir still matches.
+    assert "include: ['conformance/calc-ts/**/*.test.ts']" in config_text
     assert f"{json.dumps('calc-ts')}: " in config_text
 
 
@@ -824,3 +922,138 @@ def test_typescript_stale_replay_cassette_fails_with_live_smoke_hint(tmp_path):
 
     with pytest.raises(MintError, match="prompt content changed.*MINT_LIVE=1 mint live-smoke calc-ts"):
         replay.complete(system="system", prompt="new prompt", request=request)
+
+
+# --------------------------------------------------------------------------- #
+# Adapter-level defect regression tests (no full render required)
+# --------------------------------------------------------------------------- #
+
+from mint_cli import stacks
+from mint_cli.stacks import (
+    TypeScriptStackAdapter,
+    _probe_binary,
+    _run_capture,
+    _strip_jsonc,
+    _ts_mutated_source,
+    _vitest_test_count,
+)
+
+
+def _write_package(tmp_path: Path, scripts: dict) -> Path:
+    package = tmp_path / "package.json"
+    package.write_text(json.dumps({"name": "m", "scripts": scripts}), encoding="utf-8")
+    return package
+
+
+def test_package_scripts_reject_pass_with_no_tests(tmp_path):
+    package = _write_package(
+        tmp_path,
+        {
+            "typecheck": "tsc --noEmit",
+            "test:unit": "vitest run --passWithNoTests tests",
+            "test:conformance": "vitest run",
+        },
+    )
+    failures = TypeScriptStackAdapter()._package_script_failures(package)
+    assert any("--passWithNoTests" in f for f in failures)
+
+
+def test_package_scripts_reject_shell_metacharacters(tmp_path):
+    package = _write_package(
+        tmp_path,
+        {
+            "typecheck": "tsc --noEmit",
+            "test:unit": "vitest run tests || true",
+            "test:conformance": "vitest run && echo done",
+        },
+    )
+    failures = TypeScriptStackAdapter()._package_script_failures(package)
+    assert any("metacharacter" in f and "test:unit" in f for f in failures)
+    assert any("metacharacter" in f and "test:conformance" in f for f in failures)
+
+
+def test_package_scripts_accept_clean_commands(tmp_path):
+    package = _write_package(
+        tmp_path,
+        {
+            "typecheck": "tsc --noEmit",
+            "test:unit": "vitest run tests",
+            "test:conformance": "vitest run",
+        },
+    )
+    assert TypeScriptStackAdapter()._package_script_failures(package) == []
+
+
+def test_vitest_test_count_reads_report_and_missing(tmp_path):
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"numTotalTests": 4}), encoding="utf-8")
+    assert _vitest_test_count(report) == 4
+    report.write_text(json.dumps({"numTotalTests": 0}), encoding="utf-8")
+    assert _vitest_test_count(report) == 0
+    # A missing/unparsable report is "unknown", never silently zero.
+    assert _vitest_test_count(tmp_path / "nope.json") is None
+
+
+def test_strip_jsonc_handles_comments_and_trailing_commas():
+    text = """{
+      // line comment
+      "compilerOptions": {
+        "strict": true, /* block */
+        "target": "ES2022",
+      },
+    }"""
+    parsed = json.loads(_strip_jsonc(text))
+    assert parsed["compilerOptions"]["target"] == "ES2022"
+    assert parsed["compilerOptions"]["strict"] is True
+    # A URL-like value containing // inside a string must survive.
+    assert json.loads(_strip_jsonc('{"u": "http://x/y"}'))["u"] == "http://x/y"
+
+
+def test_probe_binary_missing_does_not_raise():
+    result = _probe_binary("definitely-not-a-real-binary-xyz")
+    assert result.returncode != 0
+    assert "not found" in result.stderr
+
+
+def test_run_capture_times_out_and_reports():
+    result = _run_capture(
+        [sys.executable, "-c", "import time; time.sleep(5)"],
+        timeout=0.2,
+    )
+    assert result.returncode == 124
+    assert "timed out" in result.stderr
+
+
+def test_cleanup_runtime_caches_spares_src_coverage(tmp_path):
+    root = tmp_path / "gen"
+    (root / "src" / "coverage").mkdir(parents=True)
+    (root / "src" / "coverage" / "index.ts").write_text("export const x = 1;\n", encoding="utf-8")
+    (root / "coverage").mkdir()
+    (root / "coverage" / "junk.txt").write_text("x", encoding="utf-8")
+    (root / ".vitest").mkdir()
+
+    TypeScriptStackAdapter().cleanup_runtime_caches(root)
+
+    # Top-level caches removed; a legitimate src/coverage module is preserved.
+    assert not (root / "coverage").exists()
+    assert not (root / ".vitest").exists()
+    assert (root / "src" / "coverage" / "index.ts").exists()
+
+
+def test_ts_mutated_source_offsets_survive_astral_chars():
+    # An emoji (astral char, 2 UTF-16 units) in a comment before the body would shift
+    # code-point based slicing; the UTF-16 approach must place the throw correctly.
+    source = 'export function f(): number {\n  // \U0001F600 comment\n  return 1;\n}\n'
+    units = source.encode("utf-16-le")
+    open_brace = source.index("{")
+    close_brace = source.rindex("}")
+    # Offsets are UTF-16 code units, matching what the TS compiler emits.
+    body_start = len(source[:open_brace].encode("utf-16-le")) // 2 + 1
+    body_end = len(source[:close_brace].encode("utf-16-le")) // 2
+    candidate = {"name": "f", "bodyStart": body_start, "bodyEnd": body_end}
+    mutated = _ts_mutated_source(source, candidate)
+    assert "mint mutation probe: f" in mutated
+    # Braces preserved and original body removed.
+    assert mutated.startswith("export function f(): number {")
+    assert mutated.rstrip().endswith("}")
+    assert "return 1;" not in mutated

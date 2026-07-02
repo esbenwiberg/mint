@@ -11,9 +11,19 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
-from .stacks import adapter_for_stack
+from .stacks import (
+    PYTEST_NO_TESTS,
+    _run_capture,
+    _run_project_script as _stacks_run_project_script,
+    _timeout_seconds,
+    adapter_for_stack,
+    script_env as _stacks_script_env,
+)
+
+_DEFAULT_TEST_TIMEOUT = 300.0
 
 
 @dataclass(frozen=True)
@@ -24,6 +34,7 @@ class MutationCandidate:
     lineno: int
     body_start: int
     body_end: int
+    body_col: int
 
 
 def evaluate_test_quality(
@@ -57,8 +68,10 @@ def evaluate_test_quality(
     traceability = _trace_acceptance_criteria(context, unit, adapter.test_quality_token_files(context))
     if _defer_coverage_and_mutation(context, unit):
         reason = "deferred until final functional unit for multi-unit module"
-        coverage = {"status": "skipped", "reason": reason}
-        mutation = {"status": "skipped", "reason": reason}
+        # status stays "skipped" for backward-compatible verdict handling, but the
+        # explicit deferred flag distinguishes "not yet due" from "genuinely skipped".
+        coverage = {"status": "skipped", "reason": reason, "deferred": True}
+        mutation = {"status": "skipped", "reason": reason, "deferred": True}
     else:
         coverage = adapter.measure_coverage(context, required_paths=required_src)
         mutation = adapter.run_mutation_probe(
@@ -101,12 +114,18 @@ def format_test_quality_verdict(verdict: dict[str, Any]) -> str:
     lines = [f"test-quality: {verdict.get('status')}"]
     coverage = verdict.get("coverage", {})
     if coverage:
-        lines.append(
-            "coverage: "
-            f"{coverage.get('percent', 0):.1f}% "
-            f"({coverage.get('coveredLines', 0)}/{coverage.get('totalLines', 0)} lines, "
-            f"threshold {coverage.get('threshold', 0)}%)"
-        )
+        cov_status = coverage.get("status")
+        if cov_status in {"skipped", "deferred"}:
+            reason = coverage.get("reason", "")
+            label = "deferred" if coverage.get("deferred") else cov_status
+            lines.append(f"coverage: {label}" + (f" ({reason})" if reason else ""))
+        else:
+            lines.append(
+                "coverage: "
+                f"{coverage.get('percent', 0):.1f}% "
+                f"({coverage.get('coveredLines', 0)}/{coverage.get('totalLines', 0)} lines, "
+                f"threshold {coverage.get('threshold', 0)}%)"
+            )
     traceability = verdict.get("traceability", [])
     if traceability:
         passed = sum(1 for item in traceability if item.get("status") == "passed")
@@ -131,8 +150,14 @@ def _trace_acceptance_criteria(
     for index, criterion in enumerate(unit.acceptance, start=1):
         tokens = sorted(_criterion_tokens(criterion))
         matched = [token for token in tokens if token in test_tokens]
-        required = min(2, len(tokens)) if tokens else 1
-        status = "passed" if len(matched) >= required else "failed"
+        if not tokens:
+            # No distinctive identifier-like tokens to trace (e.g. an all-stopword
+            # criterion). We cannot prove or disprove a reference — skip, don't fail.
+            status = "skipped"
+            required = 0
+        else:
+            required = min(2, len(tokens))
+            status = "passed" if len(matched) >= required else "failed"
         verdicts.append(
             {
                 "index": index,
@@ -147,10 +172,22 @@ def _trace_acceptance_criteria(
 
 
 def _test_tokens(token_files: list[Path]) -> set[str]:
+    # Tokenize test *code* only: comments are stripped first so a criterion pasted
+    # into a comment cannot satisfy traceability without a real test reference.
     tokens: set[str] = set()
     for path in token_files:
-        tokens.update(_tokens(path.read_text(encoding="utf-8", errors="ignore")))
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        tokens.update(_tokens(_strip_source_comments(text, path.suffix.lower())))
     return tokens
+
+
+def _strip_source_comments(text: str, suffix: str) -> str:
+    if suffix in {".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}:
+        text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+        text = re.sub(r"(?m)//.*$", " ", text)
+    else:  # python and friends
+        text = re.sub(r"(?m)#.*$", " ", text)
+    return text
 
 
 def _test_files(context: Any) -> list[Path]:
@@ -199,9 +236,16 @@ def _measure_coverage(context: Any, *, required_src: list[Path]) -> dict[str, An
     result = _run_trace_process(context, required_src=required_src)
     threshold = context.config.test_quality.min_coverage_percent
     if result["exitCode"] != 0:
+        if result["exitCode"] == PYTEST_NO_TESTS:
+            reason = (
+                "coverage trace collected no tests (pytest exit 5): the unit or "
+                "conformance suite has no tests to run"
+            )
+        else:
+            reason = "coverage trace run failed"
         return {
             "status": "failed",
-            "reason": "coverage trace run failed",
+            "reason": reason,
             "threshold": threshold,
             "percent": 0.0,
             "coveredLines": 0,
@@ -212,6 +256,20 @@ def _measure_coverage(context: Any, *, required_src: list[Path]) -> dict[str, An
 
     covered = int(result["coveredLines"])
     total = int(result["totalLines"])
+    if total == 0:
+        return {
+            "status": "failed",
+            "reason": (
+                "coverage measured no executable generated-source lines "
+                "(ensure tests import the generated module so its code runs)"
+            ),
+            "threshold": threshold,
+            "percent": 0.0,
+            "coveredLines": 0,
+            "totalLines": 0,
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+        }
     percent = (covered / total * 100.0) if total else 100.0
     status = "passed" if percent >= threshold else "failed"
     verdict = {
@@ -229,29 +287,41 @@ def _measure_coverage(context: Any, *, required_src: list[Path]) -> dict[str, An
 
 def _run_trace_process(context: Any, *, required_src: list[Path]) -> dict[str, Any]:
     runs: list[dict[str, Any]] = []
+    timeout = _timeout_seconds("MINT_TEST_TIMEOUT_SECONDS", _DEFAULT_TEST_TIMEOUT)
     for target in ["unit", "conformance"]:
         env = _script_env(context, required_src)
         env["MINT_TRACE_TARGET"] = target
-        completed = subprocess.run(
-            [sys.executable, "-c", _TRACE_RUNNER],
-            cwd=context.root,
-            env=env,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        # Run under the same interpreter the project scripts honour (PYTHON_BIN),
+        # so a project-venv user's deps are visible to the trace too.
+        interpreter = env.get("PYTHON_BIN") or sys.executable
+        # The runner writes its JSON payload to this file rather than stdout, so a
+        # C-extension or fd-1 write from the tests cannot corrupt the protocol.
+        handle, out_path = tempfile.mkstemp(prefix="mint-trace-", suffix=".json")
+        os.close(handle)
+        env["MINT_TRACE_OUTPUT"] = out_path
         try:
-            data = json.loads(completed.stdout)
-        except json.JSONDecodeError:
-            return {
-                "exitCode": completed.returncode or 1,
-                "coveredLines": 0,
-                "totalLines": 0,
-                "files": [],
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
-            }
+            completed = _run_capture(
+                [interpreter, "-c", _TRACE_RUNNER],
+                cwd=context.root,
+                env=env,
+                timeout=timeout,
+            )
+            try:
+                data = json.loads(Path(out_path).read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return {
+                    "exitCode": completed.returncode or 1,
+                    "coveredLines": 0,
+                    "totalLines": 0,
+                    "files": [],
+                    "stdout": completed.stdout,
+                    "stderr": completed.stderr,
+                }
+        finally:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
         data.setdefault("stderr", completed.stderr)
         data["target"] = target
         runs.append(data)
@@ -359,6 +429,28 @@ try:
 finally:
     sys.settrace(previous_trace)
 
+def executable_lines(source_text, filename):
+    # Bytecode-backed executable lines via code.co_lines(): excludes blank lines,
+    # comments, docstrings, string continuations, and bare else:/finally: headers
+    # that the naive "non-blank, non-#" heuristic wrongly counted as executable.
+    try:
+        code = compile(source_text, filename, "exec")
+    except SyntaxError:
+        return None
+    lines = set()
+    stack = [code]
+    code_type = type(code)
+    while stack:
+        current = stack.pop()
+        for start, end, lineno in current.co_lines():
+            if lineno:
+                lines.add(lineno)
+        for const in current.co_consts:
+            if isinstance(const, code_type):
+                stack.append(const)
+    return lines
+
+
 files = []
 covered_total = 0
 line_total = 0
@@ -366,12 +458,10 @@ for path in sorted(src.rglob("*.py")):
     if path.name == "_mint_provenance.py":
         continue
     rel = path.relative_to(src).as_posix()
-    source_lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    executable = {
-        index
-        for index, line in enumerate(source_lines, start=1)
-        if line.strip() and not line.lstrip().startswith("#")
-    }
+    source_text = path.read_text(encoding="utf-8", errors="ignore")
+    executable = executable_lines(source_text, str(path))
+    if executable is None:
+        continue
     covered = {
         lineno
         for (relpath, lineno), count in counts.items()
@@ -389,14 +479,20 @@ for path in sorted(src.rglob("*.py")):
         covered_total += len(covered_executable)
         line_total += len(executable)
 
-print(json.dumps({
+payload = json.dumps({
     "exitCode": int(exit_code),
     "coveredLines": covered_total,
     "totalLines": line_total,
     "files": files,
     "stdout": stdout.getvalue(),
     "stderr": stderr.getvalue(),
-}, sort_keys=True))
+}, sort_keys=True)
+out_path = os.environ.get("MINT_TRACE_OUTPUT")
+if out_path:
+    with open(out_path, "w", encoding="utf-8") as _fh:
+        _fh.write(payload)
+else:
+    print(payload)
 '''
 
 
@@ -510,6 +606,10 @@ def _candidates_from_body(
                 continue
             first = node.body[0]
             last = node.body[-1]
+            # Skip single-line bodies (`def f(): return x`): our replacement is
+            # line-based and rewriting `def`+body on one line would corrupt the file.
+            if first.lineno == node.lineno:
+                continue
             end_lineno = getattr(last, "end_lineno", last.lineno)
             name = ".".join(parents + [node.name]) if parents else node.name
             candidates.append(
@@ -520,6 +620,9 @@ def _candidates_from_body(
                     lineno=node.lineno,
                     body_start=first.lineno,
                     body_end=end_lineno,
+                    # col_offset preserves the exact leading whitespace (tabs or
+                    # spaces) so the injected raise keeps the block's indentation.
+                    body_col=first.col_offset,
                 )
             )
     return candidates
@@ -550,7 +653,11 @@ def _mutate_and_test(
 def _mutated_source(source: str, candidate: MutationCandidate) -> str:
     lines = source.splitlines(keepends=True)
     first_body_line = lines[candidate.body_start - 1]
-    indent = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" "))]
+    # Reproduce the exact indentation (tabs or spaces) from the AST column offset,
+    # falling back to the leading whitespace run if the line is shorter than expected.
+    indent = first_body_line[: candidate.body_col] or first_body_line[
+        : len(first_body_line) - len(first_body_line.lstrip())
+    ]
     replacement = f'{indent}raise AssertionError("mint mutation probe: {candidate.name}")\n'
     lines[candidate.body_start - 1 : candidate.body_end] = [replacement]
     return "".join(lines)
@@ -561,28 +668,13 @@ def _run_project_script(
     script: str,
     required_src: list[Path],
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(context.root / script), context.module],
-        cwd=context.root,
-        env=_script_env(context, required_src),
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    # Delegate to the canonical helper in stacks (single source of truth): it adds the
+    # existence/executable-bit checks and the subprocess timeout that this copy lacked.
+    return _stacks_run_project_script(context, script, env=_script_env(context, required_src))
 
 
 def _script_env(context: Any, required_src: list[Path]) -> dict[str, str]:
-    env = os.environ.copy()
-    env["MINT_GENERATED_DIR"] = str(context.generated_dir)
-    env["MINT_CONFORMANCE_DIR"] = str(context.conformance_dir)
-    if required_src:
-        env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(path) for path in required_src)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["MINT_SKIP_PYTEST_VERSION_CHECK"] = "1"
-    env.setdefault("PYTHONPYCACHEPREFIX", "/private/tmp/mint-pycache")
-    env.setdefault("PYTHON_BIN", sys.executable)
-    return env
+    return _stacks_script_env(context, required_src)
 
 
 def _remove_runtime_caches(path: Path) -> None:
