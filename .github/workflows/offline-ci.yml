@@ -2,25 +2,35 @@ name: offline-ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: offline-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     env:
       MINT_LIVE: "0"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
+      # setup-node was dropped: the offline TypeScript tests stub the toolchain
+      # with bash fakes on PATH and never invoke a real node/tsc/vitest.
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
+          python-version: ${{ matrix.python-version }}
       - name: Install package
         run: python -m pip install -e ".[dev]"
       - name: Doctor
         run: mint doctor
       - name: Offline tests
-        run: pytest --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q
+        # -n auto parallelises the suite via pytest-xdist; the render tests are
+        # tmp_path-isolated so they are safe to run concurrently.
+        run: pytest -n auto --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q

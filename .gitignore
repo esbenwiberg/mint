@@ -13,3 +13,7 @@ generated/*
 
 conformance/*
 !conformance/.gitkeep
+
+# Internal review-tool state (runs, findings, locks). Already-tracked files are
+# left in place; this only stops new runtime state from being committed.
+.clawpatch/

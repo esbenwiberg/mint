@@ -25,6 +25,8 @@ The cassette id is a stable SHA-256 hash of:
 - render phase
 - attempt number
 - full prompt text
+- pinned model id (for cassettes recorded with a model; legacy model-less
+  cassettes are still resolved as a fallback)
 
 That means prompt edits and prompt-version changes miss the old fixture loudly
 instead of replaying a stale model response.

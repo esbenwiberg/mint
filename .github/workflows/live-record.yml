@@ -8,6 +8,14 @@ on:
         required: true
         default: "calc-cli"
 
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: live-record
+  cancel-in-progress: false
+
 jobs:
   record:
     runs-on: ubuntu-latest
@@ -25,4 +33,38 @@ jobs:
       - name: Refuse missing API key
         run: test -n "$ANTHROPIC_API_KEY"
       - name: Live render and record cassettes
-        run: mint live-smoke "${{ inputs.module }}"
+        # module is passed via env, never interpolated into the shell, so a
+        # crafted dispatch input cannot inject commands on a runner that holds
+        # ANTHROPIC_API_KEY.
+        env:
+          MODULE: ${{ inputs.module }}
+        run: mint live-smoke "$MODULE"
+      - name: Upload recorded cassettes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cassettes-${{ inputs.module }}
+          path: resources/cassettes/v1/
+          if-no-files-found: warn
+      - name: Open PR with refreshed cassettes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODULE: ${{ inputs.module }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- resources/cassettes/v1/; then
+            echo "No cassette changes to commit."
+            exit 0
+          fi
+          branch="live-record/${MODULE}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          git add resources/cassettes/v1/
+          git commit -m "chore(cassettes): refresh ${MODULE} replay cassettes"
+          git push origin "$branch"
+          gh pr create \
+            --title "chore(cassettes): refresh ${MODULE} replay cassettes" \
+            --body "Automated cassette refresh from the live-record workflow for module \`${MODULE}\` (run ${GITHUB_RUN_ID})." \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$branch"

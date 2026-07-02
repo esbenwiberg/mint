@@ -45,6 +45,23 @@ testQuality:
 """
 
 
+@pytest.fixture(autouse=True)
+def _isolate_mint_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip MINT_* overrides so a developer's exported shell can't corrupt runs.
+
+    An exported ``MINT_LIVE=1`` (or a stray cassette-dir / CLI-command override)
+    would otherwise leak into the suite and produce confusing failures. CI sets
+    these explicitly per job, but local shells are unpredictable.
+    """
+    for name in (
+        "MINT_LIVE",
+        "MINT_CLAUDE_CLI_COMMAND",
+        "MINT_CODEX_CLI_COMMAND",
+        "MINT_CASSETTE_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 class Project:
     def __init__(self, root: Path) -> None:
         self.root = root

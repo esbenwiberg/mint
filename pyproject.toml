@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mint-regenerative"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Local Codeplain-inspired regenerative coding experiment"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -15,8 +15,12 @@ authors = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest==9.0.3", "pytest-cov==7.1.0"]
+dev = ["pytest==9.0.3", "pytest-cov==7.1.0", "pytest-xdist==3.6.1"]
 live = ["anthropic>=0.40,<1"]
+
+[tool.setuptools.dynamic]
+# Single source of truth for the version: the top-level VERSION file.
+version = { file = "VERSION" }
 
 [project.scripts]
 mint = "mint_cli.cli:main"
@@ -26,7 +30,23 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = [".mint/generated", "generated", "conformance", ".git", ".mintgen"]
+# norecursedirs matches path *basenames* via fnmatch, so ".mint/generated"
+# never matched anything. Setting this key also drops pytest's built-in
+# defaults, so they are re-listed here alongside the repo-specific dirs.
+norecursedirs = [
+  "*.egg",
+  ".*",
+  "_darcs",
+  "build",
+  "CVS",
+  "dist",
+  "node_modules",
+  "venv",
+  "{arch}",
+  ".mint",
+  "generated",
+  "conformance",
+]
 markers = [
   "e2e: end-to-end tests that drive the CLI in subprocesses",
 ]

@@ -63,7 +63,10 @@ deterministic renderer remains for the built-in demo templates and tests.
 
 ## TypeScript example
 
-TypeScript stacks are model/replay only. A minimal `typescript-lib` spec starts like:
+TypeScript stacks are model/replay only. Like every spec, a `typescript-lib`
+spec must include all four `##` body sections (`definitions`, `implementation`,
+`test`, `functional`); omitting any of them fails parsing with
+`Spec has no <name> section`. A complete minimal `typescript-lib` spec:
 
 ```markdown
 ---
@@ -77,10 +80,27 @@ rendererModel: your-model-id
 rendererPromptVersion: calc-ts-v1
 ---
 
+## definitions
+
+- Calculator: the public API exported from `src/index.ts`.
+
 ## implementation
 
 - Expose the public API from `src/index.ts`.
 - `package.json` scripts run `tsc --noEmit`, `vitest run tests`, and `vitest run`.
+
+## test
+
+- Tests use vitest and import only the public API from `src/index.ts`.
+
+## functional
+
+- id: FR1
+  title: add returns the sum of two numbers
+  spec:
+    - Export an `add(a, b)` function.
+  acceptance:
+    - `add(2, 3)` returns `5`.
 ```
 
 See [typescript.md](typescript.md) for the generated package contract and current
