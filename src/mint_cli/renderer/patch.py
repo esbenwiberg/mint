@@ -67,12 +67,26 @@ def _validate_file(entry: Any, index: int) -> dict[str, Any]:
     return normalized
 
 
+RESERVED_FIRST_COMPONENTS = {".git", ".mintgen"}
+
+
 def _reject_escaping_path(path: str, where: str) -> None:
     pure = PurePosixPath(path)
     if pure.is_absolute():
         raise MintError(f"Patch {where} path must be relative, not absolute: {path}")
+    if not pure.parts:
+        # Empty after normalization, e.g. "." or "" — nothing sane to write.
+        raise MintError(f"Patch {where} path normalizes to an empty path: {path!r}")
     if ".." in pure.parts:
         raise MintError(f"Patch {where} path must not escape the target dir: {path}")
+    # Block writes into the generated repo's VCS/metadata dirs: a patch entry like
+    # ".git/hooks/pre-commit" would plant a hook that runs on the next checkpoint
+    # commit, and ".mintgen" holds mint's own state. Reject at any depth.
+    reserved = RESERVED_FIRST_COMPONENTS.intersection(pure.parts)
+    if reserved:
+        raise MintError(
+            f"Patch {where} path must not write inside {sorted(reserved)[0]}/: {path}"
+        )
 
 
 def apply_patch(
@@ -80,23 +94,68 @@ def apply_patch(
     module_dir: Path,
     conformance_dir: Path,
 ) -> list[str]:
-    """Apply a validated patch. Returns the list of touched paths (for logging)."""
+    """Apply a validated patch. Returns the list of touched paths (for logging).
+
+    Atomic-ish: every entry's root-containment is checked in a pre-pass before *any*
+    file is written or deleted, so a single escaping entry can't leave a half-applied
+    patch behind (the conformance dir is not git-managed, so a partial apply there is
+    not recoverable via checkpoint rollback).
+    """
     roots = {"module": module_dir, "conformance": conformance_dir}
-    touched: list[str] = []
+
+    # Pre-pass: resolve and validate every target before touching disk. ``raw_target``
+    # is the literal (unresolved) path — used for delete, so a symlink is removed as a
+    # symlink rather than following it to its target. ``resolved`` is used for the
+    # containment check and for writes (defense in depth against symlinked escapes).
+    planned: list[tuple[dict[str, Any], Path, Path]] = []
     for entry in patch["files"]:
         base = roots[entry["root"]]
-        target = (base / entry["path"]).resolve()
-        # Defense in depth: the resolved target must stay inside its root.
         base_resolved = base.resolve()
-        if base_resolved not in target.parents and target != base_resolved:
+        raw_target = base / entry["path"]
+        resolved = raw_target.resolve()
+        if base_resolved not in resolved.parents:
+            if resolved == base_resolved:
+                raise MintError(
+                    f"Patch path resolves to the {entry['root']} root itself: "
+                    f"{entry['path']}"
+                )
             raise MintError(f"Patch path escapes {entry['root']} dir: {entry['path']}")
+        planned.append((entry, raw_target, resolved))
 
+    # Apply pass: only reached once every entry has passed validation.
+    touched: list[str] = []
+    for entry, raw_target, resolved in planned:
         if entry["action"] == "write":
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(entry["contents"], encoding="utf-8")
+            try:
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                resolved.write_text(entry["contents"], encoding="utf-8")
+            except OSError as exc:
+                raise MintError(f"Failed to write {entry['path']}: {exc}") from exc
             touched.append(f"{entry['root']}:{entry['path']}")
         elif entry["action"] == "delete":
-            if target.exists():
-                target.unlink()
+            _delete_target(raw_target, entry["path"])
             touched.append(f"{entry['root']}:{entry['path']} (deleted)")
     return touched
+
+
+def _delete_target(target: Path, rel_path: str) -> None:
+    # is_symlink() first, on the *unresolved* path: a broken symlink (dangling target)
+    # reports exists()==False, so the old exists()-gated unlink silently reported it
+    # deleted without removing it. Directories are refused rather than crashing with a
+    # raw IsADirectoryError.
+    if target.is_symlink():
+        try:
+            target.unlink()
+        except OSError as exc:
+            raise MintError(f"Failed to delete symlink {rel_path}: {exc}") from exc
+        return
+    if target.is_dir():
+        raise MintError(
+            f"Patch cannot delete directory {rel_path}; only files and symlinks are "
+            "supported."
+        )
+    if target.exists():
+        try:
+            target.unlink()
+        except OSError as exc:
+            raise MintError(f"Failed to delete {rel_path}: {exc}") from exc

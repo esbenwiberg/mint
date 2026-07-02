@@ -21,6 +21,7 @@ from mint_cli.renderer import (
     cassette_id,
     extract_json,
     get_renderer,
+    normalize_feedback,
     validate_patch,
 )
 from mint_cli.hashing import hash_text
@@ -579,3 +580,198 @@ def test_model_provider_defaults_to_replay_not_live(tmp_path):
 
     with pytest.raises(MintError, match="Replay cassette not found.*MINT_LIVE=1"):
         renderer.render(make_request())
+
+
+# ---- feedback normalization (deterministic replay) ----
+
+
+def test_normalize_feedback_strips_nondeterminism():
+    raw = (
+        "platform darwin -- Python 3.12.0, pytest-8.0.0, pluggy-1.4.0\n"
+        "rootdir: /private/tmp/pytest-of-ewi/pytest-3/test_x0\n"
+        "plugins: anyio-4.0.0\n"
+        "FAILED tests/test_fr1.py::test_add - AssertionError: boom\n"
+        "=== 1 failed in 0.03s ===\n"
+    )
+    out = normalize_feedback(raw)
+
+    assert "Python 3.12" not in out       # platform header dropped
+    assert "rootdir" not in out           # rootdir header dropped
+    assert "anyio" not in out             # plugins header dropped
+    assert "/private/tmp" not in out      # absolute path redacted
+    assert "0.03s" not in out             # duration scrubbed
+    assert "<DURATION>" in out
+    assert "AssertionError: boom" in out  # the actual signal survives
+
+
+def test_normalize_feedback_is_idempotent():
+    raw = "FAILED at /tmp/x/test.py in 1.20s\n"
+    once = normalize_feedback(raw)
+    assert normalize_feedback(once) == once
+
+
+def test_normalize_feedback_leaves_division_expressions_alone():
+    # A non-word char must precede the leading slash to redact — "1/2" is not a path.
+    out = normalize_feedback("assert 1/2 == 0.5")
+    assert out == "assert 1/2 == 0.5"
+
+
+def test_cassette_id_stable_across_nondeterministic_feedback():
+    # The critical fix: retry prompts embed test output; normalizing it keeps the
+    # cassette id stable so a recorded retry can actually replay on another machine.
+    fb1 = "rootdir: /tmp/a\nFAILED test_x - boom\n=== 1 failed in 0.03s ==="
+    fb2 = "rootdir: /home/ci/b\nFAILED test_x - boom\n=== 1 failed in 1.27s ==="
+
+    p1 = build_prompt(make_request(attempt=2, feedback=fb1), "v1")
+    p2 = build_prompt(make_request(attempt=2, feedback=fb2), "v1")
+
+    assert p1 == p2
+    assert cassette_id(
+        prompt_version="v1", request=make_request(attempt=2, feedback=fb1), prompt=p1
+    ) == cassette_id(
+        prompt_version="v1", request=make_request(attempt=2, feedback=fb2), prompt=p2
+    )
+
+
+def test_build_prompt_feedback_fence_survives_backticks():
+    # Test output containing a ``` run must not break out of the fence.
+    prompt = build_prompt(make_request(feedback="Traceback:\n```\nassert False\n```"), "v1")
+    assert "assert False" in prompt
+    assert "````" in prompt  # outer fence widened past the embedded ```
+
+
+def test_build_prompt_missing_definition_field_fails_loudly():
+    with pytest.raises(MintError, match="missing required field 'text'"):
+        build_prompt(make_request(definitions=[{"name": "Task"}]), "v1")
+
+
+# ---- extract_json robustness ----
+
+
+def test_extract_json_brace_inside_string_value():
+    text = 'prefix {"summary": "has a } brace", "files": [{"path": "a"}]} suffix'
+    assert extract_json(text)["summary"] == "has a } brace"
+
+
+def test_extract_json_skips_failing_candidate():
+    text = 'noise {not: json} then {"files": [{"path": "a"}]}'
+    assert extract_json(text)["files"][0]["path"] == "a"
+
+
+# ---- patch path hardening ----
+
+
+def test_validate_patch_rejects_git_dir():
+    patch = {"files": [{"path": ".git/hooks/pre-commit", "action": "write", "contents": "x"}]}
+    with pytest.raises(MintError, match=r"\.git"):
+        validate_patch(patch)
+
+
+def test_validate_patch_rejects_git_dir_at_depth():
+    patch = {"files": [{"path": "src/.git/config", "action": "write", "contents": "x"}]}
+    with pytest.raises(MintError, match=r"\.git"):
+        validate_patch(patch)
+
+
+def test_validate_patch_rejects_mintgen_dir():
+    patch = {"files": [{"path": ".mintgen/state.json", "action": "write", "contents": "x"}]}
+    with pytest.raises(MintError, match=r"\.mintgen"):
+        validate_patch(patch)
+
+
+def test_validate_patch_rejects_dot_path():
+    patch = {"files": [{"path": ".", "action": "write", "contents": "x"}]}
+    with pytest.raises(MintError, match="empty path"):
+        validate_patch(patch)
+
+
+def test_apply_patch_atomic_pre_pass_blocks_partial_write(tmp_path):
+    module = tmp_path / "m"
+    module.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (module / "link").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:  # pragma: no cover - platform specific
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    patch = validate_patch(
+        {
+            "files": [
+                {"path": "good.py", "action": "write", "contents": "ok\n", "root": "module"},
+                {"path": "link/evil.py", "action": "write", "contents": "x", "root": "module"},
+            ]
+        }
+    )
+
+    with pytest.raises(MintError, match="escapes module dir"):
+        apply_patch(patch, module, tmp_path / "c")
+
+    # Escape is caught in the pre-pass, so the earlier good entry is never written.
+    assert not (module / "good.py").exists()
+    assert not (outside / "evil.py").exists()
+
+
+def test_apply_patch_deletes_broken_symlink(tmp_path):
+    module = tmp_path / "m"
+    module.mkdir()
+    link = module / "dangling"
+    try:
+        link.symlink_to(module / "gone.txt")  # target inside root, does not exist
+    except OSError as exc:  # pragma: no cover - platform specific
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    assert link.is_symlink()
+    patch = validate_patch(
+        {"files": [{"path": "dangling", "action": "delete", "root": "module"}]}
+    )
+    apply_patch(patch, module, tmp_path / "c")
+
+    assert not link.is_symlink()  # actually unlinked, not just reported
+
+
+# ---- env knobs ----
+
+
+def test_mint_live_unrecognized_value_fails_loudly(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINT_LIVE", "maybe")
+    with pytest.raises(MintError, match="MINT_LIVE"):
+        get_renderer("model", model="m", prompt_version="pv1", cassette_dir=tmp_path)
+
+
+def test_mint_live_truthy_spelling_enables_recording(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINT_LIVE", "true")
+    # "true" (not just "1") must select the recording path; with no anthropic key /
+    # package this surfaces as a MintError from the live client, not a silent replay.
+    with pytest.raises(MintError):
+        get_renderer(
+            "model", model="m", prompt_version="pv1", cassette_dir=tmp_path
+        ).render(make_request())
+
+
+def test_explicit_cassette_dir_preferred_over_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINT_CASSETTE_DIR", str(tmp_path / "env_dir"))
+    monkeypatch.setenv("MINT_LIVE", "1")
+    script = tmp_path / "fake_model.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'summary': 'ok', 'files': "
+        "[{'path': 'a.py', 'action': 'write', 'contents': 'x'}]}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "MINT_CLAUDE_CLI_COMMAND",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+    )
+    explicit = tmp_path / "explicit"
+
+    with pytest.warns(UserWarning, match="MINT_CASSETTE_DIR"):
+        renderer = get_renderer(
+            "claude-cli", model="sonnet", prompt_version="pv1", cassette_dir=explicit
+        )
+    outcome = renderer.render(make_request())
+
+    # Recorded under the explicit dir, not the env dir.
+    assert (explicit / "v1" / f"{outcome.cassette_id}.json").exists()
+    assert not (tmp_path / "env_dir").exists()

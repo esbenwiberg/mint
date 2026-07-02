@@ -127,6 +127,89 @@ class ModelRenderer:
         )
 
 
+# Feedback is embedded verbatim in the prompt, which is then hashed into the
+# cassette id. Cap it (tail-truncate) as a guard against unbounded test output,
+# BEFORE normalization, so the truncate-then-normalize order is deterministic no
+# matter whether the engine already truncated upstream.
+MAX_FEEDBACK_CHARS = 20000
+
+# Lines that pytest / vitest emit with embedded environment, plugin, and tool
+# versions — pure noise for the model and nondeterministic across machines.
+_NOISE_HEADER_PREFIXES = (
+    "platform ",
+    "rootdir:",
+    "plugins:",
+    "cachedir:",
+    "configfile:",
+    "RUN v",
+    "DEV v",
+)
+# Durations like "in 0.03s", "1.2s", "12ms".
+_DURATION_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|seconds?|milliseconds?)\b")
+# Absolute POSIX paths (require a non-word char before the leading slash so "1/2"
+# style expressions are left alone) and Windows drive paths.
+_UNIX_PATH_RE = re.compile(r"(?<![\w])(?:/[\w.\-+@]+)+/?")
+_WIN_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s:'\"()]+")
+
+
+def _require(mapping: Any, key: str, where: str) -> Any:
+    """Loud-failure dict access: a malformed IR fails with an actionable message."""
+    try:
+        return mapping[key]
+    except (KeyError, TypeError) as exc:
+        raise MintError(
+            f"Render request {where} is missing required field '{key}'."
+        ) from exc
+
+
+def _truncate_tail(text: str, limit: int) -> str:
+    """Keep the tail of ``text`` (where the actual failure usually is)."""
+    if len(text) <= limit:
+        return text
+    marker = "...[feedback truncated]...\n"
+    return marker + text[-(limit - len(marker)) :]
+
+
+def _is_noise_header(line: str) -> bool:
+    stripped = line.strip()
+    return any(stripped.startswith(prefix) for prefix in _NOISE_HEADER_PREFIXES)
+
+
+def normalize_feedback(feedback: str) -> str:
+    """Scrub nondeterministic bits from test output so recorded retries replay.
+
+    Strips durations, redacts absolute/tmp paths to stable placeholders, and drops
+    platform/version header lines. Applied as the FINAL transform before feedback is
+    embedded in the prompt, so the cassette id is stable regardless of clock, machine,
+    or caller. Idempotent and safe to run on an already-truncated string.
+    """
+    kept: list[str] = []
+    for line in feedback.splitlines():
+        if _is_noise_header(line):
+            continue
+        line = _WIN_PATH_RE.sub("<PATH>", line)
+        line = _UNIX_PATH_RE.sub("<PATH>", line)
+        line = _DURATION_RE.sub("<DURATION>", line)
+        kept.append(line.rstrip())
+    return "\n".join(kept).strip()
+
+
+def _code_fence(text: str) -> str:
+    """Return a backtick fence guaranteed to be longer than any run in ``text``.
+
+    Prevents test output (or file contents) that contains ``` from breaking out of
+    the fenced block — a prompt-injection / malformed-prompt vector.
+    """
+    longest = run = 0
+    for ch in text:
+        if ch == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return "`" * max(3, longest + 1)
+
+
 def build_prompt(request: RenderRequest, prompt_version: str) -> str:
     lines: list[str] = [
         f"# Render request (prompt {prompt_version})",
@@ -135,7 +218,10 @@ def build_prompt(request: RenderRequest, prompt_version: str) -> str:
         "",
         "## Definitions",
     ]
-    lines += [f"- {d['name']}: {d['text']}" for d in request.definitions] or ["- (none)"]
+    lines += [
+        f"- {_require(d, 'name', 'definition')}: {_require(d, 'text', 'definition')}"
+        for d in request.definitions
+    ] or ["- (none)"]
     lines += ["", "## Implementation requirements"]
     lines += [f"- {item}" for item in request.implementation] or ["- (none)"]
     lines += ["", "## Test requirements"]
@@ -150,26 +236,35 @@ def build_prompt(request: RenderRequest, prompt_version: str) -> str:
         for ctx in request.imported_context:
             lines.append(f"### from {ctx.get('module')}")
             for d in ctx.get("definitions", []):
-                lines.append(f"- def {d['name']}: {d['text']}")
+                name = _require(d, "name", "imported definition")
+                text = _require(d, "text", "imported definition")
+                lines.append(f"- def {name}: {text}")
 
     if request.required_modules:
         lines += ["", "## Required modules (already generated)"]
         for req in request.required_modules:
             lines.append(f"### {req.get('module')}")
             for f in req.get("files", []):
-                lines.append(f"#### {f['path']}")
+                lines.append(f"#### {_require(f, 'path', 'required module file')}")
                 language = str(f.get("language") or request.code_fence_language or "text")
-                lines.append(f"```{language}")
-                lines.append(str(f.get("contents", "")))
-                lines.append("```")
+                contents = str(f.get("contents", ""))
+                fence = _code_fence(contents)
+                lines.append(f"{fence}{language}")
+                lines.append(contents)
+                lines.append(fence)
 
     lines += ["", "## Units already rendered"]
-    lines += [f"- {u['id']}: {u['title']}" for u in request.units_so_far] or ["- (none)"]
+    lines += [
+        f"- {_require(u, 'id', 'rendered unit')}: {_require(u, 'title', 'rendered unit')}"
+        for u in request.units_so_far
+    ] or ["- (none)"]
 
     unit = request.current_unit
+    unit_id = _require(unit, "id", "current_unit")
+    unit_title = _require(unit, "title", "current_unit")
     lines += [
         "",
-        f"## Implement unit {unit['id']}: {unit['title']}",
+        f"## Implement unit {unit_id}: {unit_title}",
         "Spec:",
         *[f"- {s}" for s in unit.get("spec", [])],
         "Acceptance:",
@@ -178,12 +273,18 @@ def build_prompt(request: RenderRequest, prompt_version: str) -> str:
         f"Phase: {request.phase} (attempt {request.attempt})",
     ]
     if request.feedback:
+        # Truncate-then-normalize: cap first (composes with any upstream truncation),
+        # then scrub nondeterministic bits as the final step so the cassette id is
+        # stable. The fence adapts to the (normalized) content so ``` inside the test
+        # output cannot break the block.
+        feedback = normalize_feedback(_truncate_tail(request.feedback, MAX_FEEDBACK_CHARS))
+        fence = _code_fence(feedback)
         lines += [
             "",
             "## Previous attempt failed — fix it. Test output:",
-            "```",
-            request.feedback.strip(),
-            "```",
+            fence,
+            feedback,
+            fence,
         ]
     lines += ["", "Return the JSON patch now."]
     return "\n".join(lines)
@@ -204,21 +305,50 @@ def extract_json(text: str) -> dict[str, Any]:
             return json.loads(fence.group(1))
         except json.JSONDecodeError:
             pass
-    # First balanced {...}.
+    # First balanced {...}, string-aware. A `}` inside a JSON string value must not
+    # close the object early, and a parse failure on one candidate must not abort the
+    # scan — advance to the next depth-0 `{` and try again.
     start = text.find("{")
-    if start != -1:
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start : i + 1])
-                    except json.JSONDecodeError:
-                        break
+    while start != -1:
+        end = _find_matching_brace(text, start)
+        if end is not None:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+        start = text.find("{", start + 1)
     raise MintError("no JSON object found in model output")
+
+
+def _find_matching_brace(text: str, start: int) -> int | None:
+    """Index of the `}` that closes the `{` at ``start``, honoring quoted strings.
+
+    Skips over characters inside double-quoted strings (respecting backslash escapes)
+    so braces embedded in string values don't affect the depth count. Returns ``None``
+    if the braces never balance.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
 
 
 class ScriptedModelClient:
@@ -386,10 +516,21 @@ def _tail(text: str, limit: int = 4000) -> str:
     return "..." + text[-limit:]
 
 
+# Multi-file JSON patches can approach ``max_response_chars`` (200KB ≈ tens of
+# thousands of tokens). 4096 silently truncated real patches and poisoned cassettes;
+# default high and stream so we never trip the SDK's non-streaming timeout guard.
+DEFAULT_ANTHROPIC_MAX_TOKENS = 32000
+
+
 class AnthropicModelClient:  # pragma: no cover - requires network + key
     """Real provider client. Imported lazily; never used by the test suite."""
 
-    def __init__(self, model: str, api_key: str | None = None, max_tokens: int = 4096) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None = None,
+        max_tokens: int = DEFAULT_ANTHROPIC_MAX_TOKENS,
+    ) -> None:
         import os
 
         try:
@@ -405,17 +546,48 @@ class AnthropicModelClient:  # pragma: no cover - requires network + key
                 "ANTHROPIC_API_KEY is not set. Export it or pass api_key, or use the "
                 "deterministic renderer (renderer.provider: local) for offline runs."
             )
+        if max_tokens <= 0:
+            raise MintError("Anthropic max_tokens must be greater than 0.")
+        self._anthropic = anthropic
         self._client = anthropic.Anthropic(api_key=key)
         self._model = model
         self._max_tokens = max_tokens
 
     def complete(self, *, system: str, prompt: str, request: RenderRequest) -> str:
-        message = self._client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return "".join(
+        # Stream so a large max_tokens doesn't trip the SDK's non-streaming HTTP
+        # timeout guard, and wrap every SDK failure in MintError for the loud-failure
+        # contract. get_final_message() gives us the full Message with stop_reason.
+        try:
+            with self._client.messages.stream(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                message = stream.get_final_message()
+        except self._anthropic.AnthropicError as exc:
+            raise MintError(
+                f"Anthropic API call failed for {request.current_unit_id} "
+                f"({request.phase}): {exc}"
+            ) from exc
+
+        # A truncated response is garbage; fail loudly so RecordingClient never
+        # persists it as a valid cassette.
+        if getattr(message, "stop_reason", None) == "max_tokens":
+            raise MintError(
+                f"Anthropic response for {request.current_unit_id} ({request.phase}) "
+                f"was truncated at max_tokens={self._max_tokens}. Raise the renderer "
+                "max_tokens knob (or reduce the patch size); refusing to record a "
+                "truncated cassette."
+            )
+
+        text = "".join(
             block.text for block in message.content if getattr(block, "type", "") == "text"
         )
+        if not text.strip():
+            raise MintError(
+                f"Anthropic response for {request.current_unit_id} ({request.phase}) "
+                f"contained no text output (stop_reason="
+                f"{getattr(message, 'stop_reason', None)!r})."
+            )
+        return text

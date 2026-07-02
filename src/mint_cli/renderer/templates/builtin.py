@@ -593,11 +593,22 @@ if __name__ == "__main__":
 
 
 def _generic_conformance(package: str) -> str:
+    # A unit id these built-in templates don't recognize (anything beyond FR1/FR2)
+    # must NOT get an import-only conformance test — that goes silently green in the
+    # deterministic renderer and hides the fact that no real conformance exists. Emit
+    # a deliberately-failing placeholder so CI surfaces the gap loudly.
     return f'''from __future__ import annotations
 
+import pytest
 
-def test_generated_package_imports():
-    __import__("{package}")
+
+def test_conformance_not_implemented():
+    pytest.fail(
+        "No conformance test is defined for this unit in the built-in '{package}' "
+        "template. Add a unit-specific conformance test in "
+        "mint_cli.renderer.templates.builtin instead of relying on an import-only "
+        "placeholder that passes without checking anything."
+    )
 '''
 
 

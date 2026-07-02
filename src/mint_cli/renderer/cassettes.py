@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -73,8 +75,7 @@ class RecordingClient:
             model=self._model,
         )
         path = cassette_path(self._cassette_dir, cassette_hash)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        payload = (
             json.dumps(
                 _cassette_record(
                     cassette_hash,
@@ -88,9 +89,9 @@ class RecordingClient:
                 indent=2,
                 sort_keys=True,
             )
-            + "\n",
-            encoding="utf-8",
+            + "\n"
         )
+        _atomic_write_text(path, payload)
         return response
 
 
@@ -308,6 +309,28 @@ def _request_metadata(request: RenderRequest, prompt: str) -> dict[str, Any]:
         "attempt": request.attempt,
         "promptHash": hash_text(prompt),
     }
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically.
+
+    A cassette is either fully present or absent — an interrupt mid-write can no
+    longer leave truncated JSON at the canonical path (which would hard-fail replay
+    and defeat the ``_find_equivalent`` fallback). Writes a temp file in the same
+    directory, then ``os.replace`` (atomic on the same filesystem).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _load_cassette(path: Path) -> dict[str, Any]:
