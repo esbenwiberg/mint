@@ -7,7 +7,9 @@ import sys
 import unittest
 from pathlib import Path
 
-from mint_cli import cli
+import pytest
+
+from mint_cli import __version__, cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -170,6 +172,8 @@ def test_cli_new_typescript_stack_scaffolds_ts_spec(make_project) -> None:
 
 def test_installed_console_script_reports_version() -> None:
     executable = Path(sys.executable).parent / "mint"
+    if not executable.exists():
+        pytest.skip(f"console script not installed at {executable}; run `pip install -e .`")
     result = subprocess.run(
         [str(executable), "--version"],
         cwd=ROOT,
@@ -181,7 +185,7 @@ def test_installed_console_script_reports_version() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "mint 1.0.0" in result.stdout
+    assert f"mint {__version__}" in result.stdout
 
 
 def test_cli_new_model_rejects_placeholder_model_id(make_project) -> None:
@@ -311,7 +315,7 @@ class CliTest(unittest.TestCase):
         result = run_mint("--version")
 
         self.assertEqual(result.returncode, 0)
-        self.assertIn("1.0.0", result.stdout)
+        self.assertIn(__version__, result.stdout)
 
     def test_help_lists_phase_zero_commands(self) -> None:
         result = run_mint("--help")

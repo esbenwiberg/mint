@@ -266,10 +266,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not hasattr(args, "handler"):
         parser.print_help()
-        return 0
+        # Match argparse's exit code for a missing/invalid command so scripts
+        # don't read a bare `mint` invocation as success.
+        return 2
 
     try:
         return args.handler(args)
     except MintError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    except BrokenPipeError:
+        # A downstream reader (e.g. `mint parse mod | head`) closed the pipe.
+        # Silence Python's flush-on-exit error and use the conventional code.
+        try:
+            sys.stdout.close()
+        except BrokenPipeError:
+            pass
+        return 141
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130

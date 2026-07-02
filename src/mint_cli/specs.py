@@ -135,6 +135,11 @@ def parse_spec_file(path: Path) -> Spec:
     except KeyError as exc:
         raise MintError(f"Missing required spec frontmatter key in {path}: {exc.args[0]}") from exc
 
+    if not MODULE_REF_RE.match(module):
+        raise MintError(
+            f"Invalid module '{module}' in {path}: use a lowercase module slug "
+            "like taskstore or calc-cli."
+        )
     if module in imports:
         raise MintError(f"Spec {path} cannot import itself ('{module}')")
     if module in requires:
@@ -142,12 +147,14 @@ def parse_spec_file(path: Path) -> Spec:
     validate_module_refs(path, imports, "imports")
     validate_module_refs(path, requires, "requires")
 
-    if path.stem.removesuffix(".mint") != module:
-        # The example spec is intentionally named example.mint.md. This check keeps
-        # future specs honest without fighting Path.stem's first-suffix behavior.
-        expected = path.name.removesuffix(".mint.md")
-        if expected != module:
-            raise MintError(f"Spec module '{module}' does not match filename {path.name}")
+    # Specs must be named <module>.mint.md; anchoring on the full suffix keeps
+    # the extension from leaking into the module name (e.g. file bar.md with
+    # module: bar.md).
+    if not path.name.endswith(".mint.md"):
+        raise MintError(f"Spec file must be named <module>.mint.md: {path.name}")
+    expected = path.name[: -len(".mint.md")]
+    if expected != module:
+        raise MintError(f"Spec module '{module}' does not match filename {path.name}")
 
     validate_spec_parts(path, definitions, implementation, test, functional_units)
 
@@ -201,7 +208,10 @@ def parse_definitions(lines: list[str]) -> list[Definition]:
         if not stripped.startswith("- ") or ":" not in stripped:
             raise MintError(f"Invalid definition line: {line}")
         name, text = stripped[2:].split(":", 1)
-        definitions.append(Definition(name=name.strip(), text=text.strip()))
+        name = name.strip()
+        if not name:
+            raise MintError(f"Definition is missing a name: {line}")
+        definitions.append(Definition(name=name, text=text.strip()))
     return definitions
 
 
@@ -263,12 +273,20 @@ def parse_functional_units(lines: list[str]) -> list[FunctionalUnit]:
         )
         current = None
 
+    unit_indent = 0
+
     for line in lines:
         if not line.strip():
             continue
         stripped = line.strip()
-        if stripped.startswith("- id:"):
+        indent = len(line) - len(line.lstrip())
+        # A `- id:` line only starts a new unit at the unit's own indent level.
+        # Deeper `- id:` text (e.g. an acceptance bullet "id: must be unique")
+        # is a list item, not a new unit — otherwise it hijacks parsing and the
+        # error gets pinned on the wrong unit.
+        if stripped.startswith("- id:") and (current is None or indent <= unit_indent):
             finish_current()
+            unit_indent = indent
             current = {"id": stripped.split(":", 1)[1].strip(), "spec": [], "acceptance": [], "resources": []}
             current_list = None
             continue
