@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from mint_cli import test_quality, workflow
+from mint_cli import stacks, test_quality, workflow
+from mint_cli.errors import MintError
 from mint_cli.renderer import ScriptedModelClient
 
 
@@ -930,7 +931,12 @@ def test_generated_script_env_defaults_to_current_interpreter(make_project):
     script.chmod(0o755)
     context = workflow.load_context("calc", project.root)
 
-    result = workflow.run_script(context, "test_scripts/print_python_bin.sh")
+    adapter = context.stack_adapter
+    result = stacks._run_project_script(
+        context,
+        "test_scripts/print_python_bin.sh",
+        env=adapter.script_env(context, []),
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == sys.executable
@@ -1195,7 +1201,15 @@ def test_attempt_budget_aborts_with_report(make_calc_project_factory, monkeypatc
     project = make_calc_project_factory()
     set_limit(project, "maxRenderAttempts", 1)
     monkeypatch.chdir(project.root)
-    client = ScriptedModelClient({"default": calc_patch("a + b")})
+    # Only real renders consume the attempt budget. Attempt 1 fails the unit test,
+    # forcing a second render; that second render trips the (2/1) attempt budget
+    # before any non-render step is reached.
+    client = ScriptedModelClient(
+        {
+            "FR1:unit:1": calc_patch("a - b"),
+            "FR1:unit:2": calc_patch("a + b"),
+        }
+    )
 
     status, output = workflow.render_module("calc", model_client=client)
 
@@ -1339,3 +1353,51 @@ def make_calc_project_factory(make_project):
         return make_calc_project(make_project)
 
     return _factory
+
+
+# --------------------------------------------------------------------------- #
+# render-plan guards: dead-knob enforcement, no-checkpoint, explicit-range drift
+# --------------------------------------------------------------------------- #
+
+
+def test_max_functional_units_per_render_is_enforced(make_project):
+    project = make_project()
+    project.write_spec("calc", CALC_TWO_UNIT_SPEC)
+    mint_yaml = project.root / "mint.yaml"
+    mint_yaml.write_text(
+        mint_yaml.read_text(encoding="utf-8").replace(
+            "maxFunctionalUnitsPerRender: 20", "maxFunctionalUnitsPerRender: 1"
+        ),
+        encoding="utf-8",
+    )
+    context = workflow.load_context("calc", project.root)
+    plan = workflow.RenderPlan(0, 1, "test")  # 2 units, cap is 1
+
+    with pytest.raises(MintError, match="maxFunctionalUnitsPerRender"):
+        workflow._enforce_max_units_per_render(context, plan)
+
+
+def test_explicit_from_without_metadata_refuses(make_project):
+    project = make_project()
+    project.write_spec("calc", CALC_TWO_UNIT_SPEC)
+    context = workflow.load_context("calc", project.root)
+    hashes = workflow.compute_context_hashes(context)
+
+    with pytest.raises(MintError, match="no checkpoint recorded"):
+        workflow.determine_render_plan(context, None, "FR2", None, False, hashes)
+
+
+def test_explicit_range_refuses_on_context_drift(make_project):
+    project = make_project()
+    project.write_spec("calc", CALC_TWO_UNIT_SPEC)
+    context = workflow.load_context("calc", project.root)
+    hashes = workflow.compute_context_hashes(context)
+    metadata = {
+        "nonFunctionalSpecHash": "stale-does-not-match",
+        "importedContextHash": hashes.imported_context_hash,
+        "requiredModuleCodeHash": hashes.required_module_code_hash,
+        "functionalUnits": [],
+    }
+
+    with pytest.raises(MintError, match="context inputs changed"):
+        workflow.determine_render_plan(context, metadata, None, "FR2:FR2", False, hashes)

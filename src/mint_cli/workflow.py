@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import os
@@ -19,7 +19,14 @@ from .config import (
     load_config,
 )
 from .errors import MintError
-from .gitutil import commit_all, ensure_git_repo, git_head, reset_hard
+from .gitutil import (
+    clean_untracked,
+    commit_all,
+    ensure_git_repo,
+    git_available,
+    git_head,
+    reset_hard,
+)
 from .hashing import hash_generated_files, hash_json
 from .modgraph import build_render_order
 from .renderer import (
@@ -253,7 +260,13 @@ class BudgetTracker:
     tokens_estimate: int = 0
 
     def record(self, *, prompt: str | None, response: str | None) -> None:
-        self.attempts += 1
+        # A render "attempt" is only consumed when the renderer actually produced
+        # output. Non-render steps -- conformance run attempt 1 and the test-quality
+        # phase -- pass prompt=response=None and must not burn the attempt budget
+        # (that made maxRenderAttempts drain ~3x too fast). Tokens still accumulate
+        # for whatever text a step carried.
+        if prompt is not None or response is not None:
+            self.attempts += 1
         self.tokens_estimate += _estimate_tokens(prompt or "") + _estimate_tokens(response or "")
 
     def exceeded(self) -> str | None:
@@ -592,6 +605,14 @@ def new_module(
         )
 
     deps = requires or []
+    invalid_deps = [dep for dep in deps if not re.match(r"^[a-z][a-z0-9_-]*$", dep)]
+    if invalid_deps:
+        return (
+            1,
+            "FAIL new\n"
+            f"- Invalid --requires value(s): {', '.join(invalid_deps)}\n"
+            "- Each required module must be a lowercase slug like calc-cli or taskstore.\n",
+        )
     spec_path = root / configured_specs_dir(root) / f"{module}.mint.md"
     if spec_path.exists():
         return (
@@ -852,6 +873,14 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
         else:
             messages.append(f"{label} script: {script}")
 
+    if git_available():
+        messages.append("git: available")
+    else:
+        failures.append(
+            "git is not runnable; Mint checkpoints generated code with git "
+            "(fix: install git and ensure it is on PATH)"
+        )
+
     probe_env = os.environ.copy()
     probe_env["PYTHONDONTWRITEBYTECODE"] = "1"
     pytest_check = subprocess.run(
@@ -860,6 +889,7 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
         env=probe_env,
         check=False,
         text=True,
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -891,11 +921,18 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
             continue
         messages.append(f"Stack: {spec.module} -> {adapter.name} ({spec.stack})")
         if adapter.name != "python":
-            stack_health = adapter.healthcheck(load_context(spec.module, root))
-            messages.extend(
-                message for message in stack_health.messages if not message.startswith("Stack adapter:")
-            )
-            failures.extend(stack_health.failures)
+            try:
+                stack_health = adapter.healthcheck(load_context(spec.module, root))
+            except MintError as exc:
+                # One unloadable spec must not abort the whole doctor report.
+                failures.append(f"{spec.module}: {exc}")
+            else:
+                messages.extend(
+                    message
+                    for message in stack_health.messages
+                    if not message.startswith("Stack adapter:")
+                )
+                failures.extend(stack_health.failures)
         template_issue = local_template_issue(spec, config)
         if template_issue:
             warnings.append(template_issue)
@@ -995,7 +1032,7 @@ def healthcheck_module(
     if context.generated_dir.exists():
         try:
             metadata = load_metadata(context.generated_dir)
-        except json.JSONDecodeError as exc:
+        except MintError as exc:
             failures.append(f"Generated metadata is invalid JSON: {exc}")
         else:
             if metadata is None:
@@ -1275,7 +1312,7 @@ def format_run_report(context: ModuleContext, report: dict[str, Any], report_pat
         f"- Tokens estimate: {totals.get('totalTokensEstimate', 0)} "
         f"(prompt {totals.get('promptTokensEstimate', 0)}, "
         f"response {totals.get('responseTokensEstimate', 0)})",
-        f"- Cost estimate: ${float(totals.get('costEstimateUsd', 0.0)):.6f}",
+        "- Cost estimate: not configured (no provider price table)",
         f"- Report JSON: {report_path.relative_to(context.root).as_posix()}",
         "Units:",
     ]
@@ -1511,13 +1548,33 @@ def metadata_path_for_message(context: ModuleContext) -> str:
     return (context.generated_dir / ".mintgen" / "module.json").relative_to(context.root).as_posix()
 
 
+def _attempt_manifest_paths(attempts_dir: Path) -> list[Path]:
+    """Attempt manifests only, never sibling artifacts.
+
+    ``write_attempt`` writes ``<phase>-<attempt>.json`` (the manifest) alongside
+    ``<phase>-<attempt>.patch.json`` and other artifacts. A bare ``glob("*.json")``
+    also matches the ``.patch.json`` files, which double-counts attempts and prints
+    garbage rows. Manifest stems never contain a dot; every other json artifact does
+    (``<base>.patch.json``), so filter on that.
+    """
+    manifests: list[Path] = []
+    for path in attempts_dir.glob("*.json"):
+        if not path.is_file():
+            continue
+        stem = path.name[: -len(".json")]
+        if "." in stem:
+            continue
+        manifests.append(path)
+    return sorted(manifests)
+
+
 def _attempt_records(context: ModuleContext, unit_id: str) -> list[dict[str, Any]]:
     attempts_dir = context.generated_dir / ".mintgen" / "attempts" / unit_id
     if not attempts_dir.exists():
         return []
 
     attempts: list[dict[str, Any]] = []
-    for path in sorted(attempts_dir.glob("*.json")):
+    for path in _attempt_manifest_paths(attempts_dir):
         data = json.loads(path.read_text(encoding="utf-8"))
         prompt_text = _read_attempt_artifact(context, data.get("promptPath"))
         response_text = _read_attempt_artifact(context, data.get("responsePath"))
@@ -1544,10 +1601,15 @@ def _attempt_records(context: ModuleContext, unit_id: str) -> list[dict[str, Any
 def _read_attempt_artifact(context: ModuleContext, relative: Any) -> str:
     if not isinstance(relative, str) or not relative:
         return ""
-    path = context.generated_dir / relative
+    base = context.generated_dir.resolve()
+    path = (context.generated_dir / relative).resolve()
+    # Containment: the path comes from a JSON manifest that could be crafted to
+    # escape the generated dir (../../etc/passwd). Refuse anything outside it.
+    if path != base and base not in path.parents:
+        return ""
     if not path.exists():
         return ""
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _estimate_tokens(text: str) -> int:
@@ -1644,10 +1706,6 @@ def render_single_module(
     if health_status != 0:
         return health_status, health_output
 
-    prepare = adapter.prepare(context)
-    if prepare.returncode != 0:
-        return 1, format_script_failure("prepare", prepare)
-
     hashes = compute_context_hashes(context)
     metadata = load_metadata(context.generated_dir)
     plan = determine_render_plan(context, metadata, from_unit, unit_range, force, hashes)
@@ -1656,6 +1714,13 @@ def render_single_module(
             write_run_report(context, build_run_report(context, metadata))
         return 0, f"NOOP {module}\n- Generated output already matches spec and inputs.\n"
 
+    # Only shell out to the prepare script once we know we will actually render;
+    # a NOOP must not run per-module prepare for every module in the chain.
+    prepare = adapter.prepare(context)
+    if prepare.returncode != 0:
+        return 1, format_script_failure("prepare", prepare)
+
+    _enforce_max_units_per_render(context, plan)
     prepare_render_workspace(context, metadata, plan, hashes)
     ensure_git_repo(context.generated_dir, module)
     metadata = load_metadata(context.generated_dir)
@@ -1767,7 +1832,7 @@ def inspect_unit(module: str, unit_id: str) -> tuple[int, str]:
     attempts_dir = context.generated_dir / ".mintgen" / "attempts" / unit_id
     if attempts_dir.exists():
         lines.append("Attempts:")
-        for path in sorted(attempts_dir.glob("*.json")):
+        for path in _attempt_manifest_paths(attempts_dir):
             data = json.loads(path.read_text(encoding="utf-8"))
             lines.append(
                 f"- {path.name}: {data.get('phase')} attempt={data.get('attempt')} "
@@ -1793,13 +1858,17 @@ def determine_render_plan(
     end_index = len(context.spec.functional_units) - 1
     if unit_range:
         start_unit, end_unit = parse_unit_range(unit_range)
+        start_index = unit_index(context.spec, start_unit)
+        _guard_explicit_range(context, metadata, hashes, start_index, "--range")
         return RenderPlan(
-            unit_index(context.spec, start_unit),
+            start_index,
             unit_index(context.spec, end_unit),
             "explicit range",
         )
     if from_unit:
-        return RenderPlan(unit_index(context.spec, from_unit), end_index, "explicit --from")
+        start_index = unit_index(context.spec, from_unit)
+        _guard_explicit_range(context, metadata, hashes, start_index, "--from")
+        return RenderPlan(start_index, end_index, "explicit --from")
     if force:
         return RenderPlan(0, end_index, "forced render")
     if metadata is None:
@@ -1826,6 +1895,88 @@ def determine_render_plan(
     return RenderPlan(0, end_index, "already rendered", noop=True)
 
 
+def _guard_explicit_range(
+    context: ModuleContext,
+    metadata: dict[str, Any] | None,
+    hashes: ContextHashes,
+    start_index: int,
+    flag: str,
+) -> None:
+    """Refuse partial renders that would silently mask drift or start mid-air.
+
+    An explicit ``--from``/``--range`` bypasses the incremental drift checks. Two
+    ways that goes wrong:
+
+    * ``start_index > 0`` with no metadata wipes the module and renders only the
+      tail, leaving earlier units ungenerated while exiting 0.
+    * ``start_index > 0`` while stored context hashes have drifted would render the
+      tail against new inputs, keep the head against old inputs, and then
+      ``refresh_metadata_hashes`` would stamp the current hashes -- permanently
+      masking the drift (the next plain render reports NOOP).
+    """
+    if start_index == 0:
+        return
+    if metadata is None:
+        start_unit = context.spec.functional_units[start_index].id
+        raise MintError(
+            f"Cannot render {context.module} {flag} {start_unit}: no checkpoint recorded "
+            f"(there is no prior render metadata). "
+            f"Fix: run a full render first (`mint render {context.module}`) before "
+            "targeting a later unit."
+        )
+
+    drift = _explicit_range_drift(context, metadata, hashes)
+    if drift:
+        start_unit = context.spec.functional_units[start_index].id
+        details = "; ".join(drift)
+        raise MintError(
+            f"Refusing partial render of {context.module} {flag} {start_unit}: "
+            f"context inputs changed since the last render ({details}). "
+            "A partial render would leave earlier units built against stale inputs and "
+            "then stamp the current hashes, permanently masking the drift. "
+            f"Fix: run a full render (`mint render {context.module} --force`) to rebuild "
+            "every unit against the new inputs."
+        )
+
+
+def _explicit_range_drift(
+    context: ModuleContext,
+    metadata: dict[str, Any],
+    hashes: ContextHashes,
+) -> list[str]:
+    drift: list[str] = []
+    if metadata.get("nonFunctionalSpecHash") != context.spec.non_functional_hash:
+        drift.append("non-functional spec changed")
+    if metadata.get("importedContextHash") != hashes.imported_context_hash:
+        drift.append("imported context changed")
+    if metadata.get("requiredModuleCodeHash") != hashes.required_module_code_hash:
+        drift.append("required module code changed")
+    return drift
+
+
+def _enforce_max_units_per_render(context: ModuleContext, plan: RenderPlan) -> None:
+    """Cap how many functional units a single render may produce.
+
+    ``limits.maxFunctionalUnitsPerRender`` is a required config key but nothing
+    enforced it, so a huge spec would render unbounded units in one pass. Refuse
+    loudly and point the user at rendering a smaller range.
+    """
+    limit = context.config.limits.max_functional_units_per_render
+    if limit <= 0:
+        return
+    count = plan.end_index - plan.start_index + 1
+    if count <= limit:
+        return
+    start_unit = context.spec.functional_units[plan.start_index].id
+    end_unit = context.spec.functional_units[plan.end_index].id
+    raise MintError(
+        f"Render of {context.module} spans {count} functional units "
+        f"({start_unit}:{end_unit}) but limits.maxFunctionalUnitsPerRender is {limit}. "
+        "Fix: render a smaller --range (e.g. one slice at a time) or raise "
+        "limits.maxFunctionalUnitsPerRender in mint.yaml."
+    )
+
+
 def prepare_render_workspace(
     context: ModuleContext,
     metadata: dict[str, Any] | None,
@@ -1850,6 +2001,10 @@ def prepare_render_workspace(
             f"Fix: run a full render with --force."
         )
     reset_hard(context.generated_dir, str(checkpoint))
+    # reset --hard only restores tracked files; untracked files an aborted prior
+    # attempt left behind survive and can make this attempt pass spuriously (then
+    # get committed by commit_all's `add -A`). Wipe them for a pristine tree.
+    clean_untracked(context.generated_dir)
 
     for unit in context.spec.functional_units[plan.start_index :]:
         shutil.rmtree(context.conformance_dir / unit.id, ignore_errors=True)
@@ -1923,6 +2078,7 @@ def render_one_unit(
             feedback = patch_feedback(exc)
             attempt += 1
             continue
+        _enforce_unit_scoped_conformance(unit, patch)
         apply_patch(patch, context.generated_dir, context.conformance_dir)
 
         rendered_unit_ids = tuple(u["id"] for u in units_so_far)
@@ -1963,7 +2119,7 @@ def render_one_unit(
         if attempt > unit_retries:
             append_render_log(context.generated_dir, f"unit failed {unit.id} ({classification})")
             raise MintError(format_phase_failure("unit", unit, classification, result))
-        feedback = combined_output(result)
+        feedback = _truncate_feedback(combined_output(result))
         attempt += 1
     unit_attempts = attempt
 
@@ -1996,6 +2152,7 @@ def render_one_unit(
                 feedback = patch_feedback(exc)
                 attempt += 1
                 continue
+            _enforce_unit_scoped_conformance(unit, patch)
             apply_patch(patch, context.generated_dir, context.conformance_dir)
             # Guard: a conformance-driven change must not break the unit tests.
             recheck = adapter.run_unit_tests(
@@ -2004,6 +2161,26 @@ def render_one_unit(
                 rendered_unit_ids=tuple(u["id"] for u in units_so_far),
             )
             if adapter.classify_test_result("unit", recheck) != "passed":
+                write_attempt(
+                    context.generated_dir,
+                    unit.id,
+                    "unit-regression",
+                    attempt,
+                    script=adapter.unit_command_label,
+                    exit_code=recheck.returncode,
+                    stdout=recheck.stdout,
+                    stderr=recheck.stderr,
+                    classification="unit_failed",
+                    summary=(
+                        f"conformance re-render regressed unit tests for {unit.id} "
+                        f"attempt {attempt}"
+                    ),
+                    renderer=outcome.renderer,
+                )
+                append_render_log(
+                    context.generated_dir,
+                    f"unit regression {unit.id} (conformance attempt {attempt})",
+                )
                 raise MintError(
                     format_phase_failure("unit-regression", unit, "unit_failed", recheck)
                 )
@@ -2043,7 +2220,7 @@ def render_one_unit(
                 context.generated_dir, f"conformance failed {unit.id} ({classification})"
             )
             raise MintError(format_phase_failure("conformance", unit, classification, result))
-        feedback = combined_output(result)
+        feedback = _truncate_feedback(combined_output(result))
         attempt += 1
 
     adapter.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
@@ -2157,6 +2334,32 @@ def render_one_unit(
     write_metadata(context.generated_dir, metadata)
     append_render_log(context.generated_dir, f"metadata {unit.id} {code_commit}")
     commit_all(context.generated_dir, f"[mint] metadata {unit.id}: {unit.title}", body)
+
+
+def _enforce_unit_scoped_conformance(unit: FunctionalUnit, patch: dict[str, Any]) -> None:
+    """Every conformance file a unit writes must live under ``<unit.id>/``.
+
+    Incremental re-render only wipes ``conformance/<unit.id>/`` for the units it
+    re-renders. If a patch writes a conformance file outside that subtree (e.g.
+    ``shared_test.py`` at the conformance root), that file is never cleaned and
+    keeps running against future renders forever. Enforce the documented
+    unit-scoped contract loudly instead of silently accumulating stale tests.
+    """
+    prefix = f"{unit.id}/"
+    offending = sorted(
+        str(entry.get("path", ""))
+        for entry in patch.get("files", [])
+        if entry.get("root") == "conformance"
+        and not str(entry.get("path", "")).replace("\\", "/").startswith(prefix)
+    )
+    if offending:
+        raise MintError(
+            f"Conformance patch for {unit.id} wrote outside conformance/{unit.id}/: "
+            f"{', '.join(offending)}. "
+            f"Every conformance file must live under {unit.id}/ so incremental "
+            "re-renders can clean it. Fix: write conformance tests under "
+            f"'{unit.id}/...' with root 'conformance'."
+        )
 
 
 def render_validated_patch(
@@ -2304,12 +2507,7 @@ def _required_modules_payload(
     return payload
 
 
-def classify_test_result(phase: str, returncode: int) -> str:
-    if returncode == 0:
-        return "passed"
-    if returncode == 5:
-        return "no_tests"
-    return f"{phase}_failed"
+FEEDBACK_MAX_CHARS = 16000
 
 
 def combined_output(result: subprocess.CompletedProcess[str]) -> str:
@@ -2321,61 +2519,20 @@ def combined_output(result: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(parts)
 
 
-def remove_runtime_caches(path: Path) -> None:
-    if not path.exists():
-        return
-    for cache_dir in path.rglob("__pycache__"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    for cache_dir in path.rglob(".pytest_cache"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    for cache_dir in path.rglob(".vite"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    for cache_dir in path.rglob(".vitest"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    for cache_dir in path.rglob("coverage"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    for pyc in path.rglob("*.pyc"):
-        pyc.unlink(missing_ok=True)
-    for tsbuildinfo in path.rglob("*.tsbuildinfo"):
-        tsbuildinfo.unlink(missing_ok=True)
+def _truncate_feedback(text: str) -> str:
+    """Bound test-failure feedback before it is fed back to the renderer.
 
-
-def run_script(
-    context: ModuleContext,
-    script: str,
-    *,
-    required_src: list[Path] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    path = context.root / script
-    if not path.exists():
-        raise MintError(
-            f"Configured script not found: {script}. "
-            f"Fix: run mint doctor; {_missing_file_fix()}."
-        )
-    if not os.access(path, os.X_OK):
-        raise MintError(f"Configured script is not executable: {script}. Fix: chmod +x {script}.")
-    env = os.environ.copy()
-    env["MINT_GENERATED_DIR"] = str(context.generated_dir)
-    env["MINT_CONFORMANCE_DIR"] = str(context.conformance_dir)
-    if required_src:
-        env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(p) for p in required_src)
-    # Never write .pyc during generated test runs. Regeneration can overwrite a file
-    # with same-size content within the same second; Python's mtime+size pyc cache
-    # would then serve STALE bytecode from a previous attempt and mask a real fix (or
-    # a real break). Disabling bytecode entirely removes that whole class of bug and
-    # keeps caches out of checkpoints for free.
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env.setdefault("PYTHONPYCACHEPREFIX", "/private/tmp/mint-pycache")
-    env.setdefault("PYTHON_BIN", sys.executable)
-    return subprocess.run(
-        [str(path), context.module],
-        cwd=context.root,
-        env=env,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    Raw pytest/vitest output can be enormous; sending it verbatim blows the token
+    budget or trips provider request-size limits. Keep the head and tail (the head
+    shows the failing test, the tail usually carries the assertion/error) and drop
+    the middle.
+    """
+    if len(text) <= FEEDBACK_MAX_CHARS:
+        return text
+    head = FEEDBACK_MAX_CHARS // 2
+    tail = FEEDBACK_MAX_CHARS - head
+    dropped = len(text) - FEEDBACK_MAX_CHARS
+    return f"{text[:head]}\n...[truncated {dropped} characters of test output]...\n{text[-tail:]}"
 
 
 def replace_record(metadata: dict[str, Any], record: dict[str, Any]) -> None:

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
+import secrets
 from typing import Any
 
 from .config import MintConfig
+from .errors import MintError
 from .hashing import hash_generated_files, hash_json
 from .specs import FunctionalUnit, Spec
 
@@ -15,8 +18,11 @@ def now_iso() -> str:
 
 
 def render_id(module: str) -> str:
-    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
-    return f"{stamp}-{module}"
+    # Sub-second resolution + random suffix so two renders inside the same second
+    # never collide on the same id (which would silently overwrite the earlier
+    # render report).
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
+    return f"{stamp}-{secrets.token_hex(3)}-{module}"
 
 
 def metadata_path(module_dir: Path) -> Path:
@@ -31,13 +37,29 @@ def load_metadata(module_dir: Path) -> dict[str, Any] | None:
     path = metadata_path(module_dir)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise MintError(
+            f"Generated metadata is corrupt JSON: {path} ({exc}). "
+            f"Fix: run `mint clean {module_dir.name} --yes` and re-render, "
+            "or restore the file from git."
+        ) from exc
 
 
 def write_metadata(module_dir: Path, metadata: dict[str, Any]) -> None:
     path = metadata_path(module_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # Atomic write: a crash mid-write must never leave a truncated module.json
+    # that poisons every later command. Write to a temp file in the same dir
+    # (so os.replace is a same-filesystem rename) then atomically swap it in.
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = json.dumps(metadata, indent=2, sort_keys=True) + "\n"
+    try:
+        tmp_path.write_text(payload, encoding="utf-8")
+        os.replace(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def append_render_log(module_dir: Path, line: str) -> None:
@@ -114,10 +136,14 @@ def trim_records(metadata: dict[str, Any], keep_unit_ids: set[str]) -> None:
         for record in metadata.get("functionalUnits", [])
         if record.get("id") in keep_unit_ids
     ]
-    if metadata["functionalUnits"]:
-        metadata["lastSuccessfulUnitId"] = metadata["functionalUnits"][-1]["id"]
-    else:
-        metadata["lastSuccessfulUnitId"] = None
+    # lastSuccessfulUnitId must only ever point at a unit that actually passed;
+    # the last *kept* record may be a failed/incomplete unit.
+    passed = [
+        record
+        for record in metadata["functionalUnits"]
+        if record.get("status") == "passed"
+    ]
+    metadata["lastSuccessfulUnitId"] = passed[-1]["id"] if passed else None
 
 
 def write_attempt(
