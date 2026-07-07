@@ -872,7 +872,28 @@ def test_doctor_passes_for_demo_project(demo_project):
 
     assert status == 0, output
     assert "PASS doctor" in output
+    assert "pip:" in output
     assert "Spec: .mint/specs/taskstore.mint.md" in output
+
+
+def test_doctor_fails_when_python_bin_has_no_pip(demo_project, tmp_path, monkeypatch):
+    # The prepare script hard-requires `$PYTHON_BIN -m pip`; an interpreter without
+    # pip (e.g. a bare uv venv) must fail doctor, not the first render.
+    stub = tmp_path / "python-without-pip"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$2" = "pip" ]; then echo "No module named pip" >&2; exit 1; fi\n'
+        'echo "pytest 9.0.0"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PYTHON_BIN", str(stub))
+
+    status, output = workflow.doctor_project(root=demo_project.root)
+
+    assert status == 1
+    assert "pip is not runnable" in output
+    assert "ensurepip" in output
 
 
 def test_doctor_warns_for_local_spec_without_template(make_project):
@@ -1271,6 +1292,34 @@ def test_model_renderer_conformance_retry(make_calc_project_factory, monkeypatch
     assert ("FR1", "conformance", 2) in client.calls
     meta = project.metadata("calc")
     assert meta["functionalUnits"][0]["attempts"]["conformance"] == 2
+
+
+def test_rendered_prompts_never_embed_project_paths(make_calc_project_factory, monkeypatch):
+    # Regression for GH issue #1: prompts (and therefore cassette ids/contents)
+    # must be a pure function of the spec, not the checkout location, or replay
+    # breaks on any other machine. Retry feedback embeds raw pytest output, which
+    # is where absolute tmp paths leaked in.
+    project = make_calc_project_factory()
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient(
+        {
+            "FR1:unit:1": calc_patch("a - b"),  # unit test fails -> feedback prompt
+            "FR1:unit:2": calc_patch("5"),  # unit passes by luck, conformance fails
+            "FR1:conformance:2": calc_patch("a + b"),
+        }
+    )
+
+    status, output = workflow.render_module("calc", model_client=client)
+
+    assert status == 0, output
+    attempts_dir = project.root / ".mint" / "generated" / "calc" / ".mintgen" / "attempts"
+    prompts = sorted(attempts_dir.rglob("*.prompt.txt"))
+    assert len(prompts) >= 3
+    for prompt_path in prompts:
+        text = prompt_path.read_text(encoding="utf-8")
+        assert str(project.root) not in text, (
+            f"absolute project path leaked into {prompt_path.name}"
+        )
 
 
 def test_aborted_render_resumes_from_last_good_checkpoint(make_project, monkeypatch):
