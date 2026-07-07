@@ -110,4 +110,5 @@ def test_checked_in_launcher_reports_version_outside_repo(tmp_path) -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "mint 1.0.0" in result.stdout
+    expected = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert f"mint {expected}" in result.stdout
