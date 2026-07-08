@@ -884,20 +884,29 @@ def doctor_project(*, root: Path | None = None) -> tuple[int, str]:
 
     probe_env = os.environ.copy()
     probe_env["PYTHONDONTWRITEBYTECODE"] = "1"
-    pytest_check = subprocess.run(
-        [sys.executable, "-m", "pytest", "--version"],
-        cwd=root,
-        env=probe_env,
-        check=False,
-        text=True,
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if pytest_check.returncode == 0:
-        messages.append(f"pytest: {pytest_check.stdout.strip()}")
-    else:
-        failures.append("pytest is not runnable (fix: pip install -e '.[dev]')")
+    # Probe the interpreter the project scripts will actually use (render exports
+    # PYTHON_BIN=sys.executable unless the caller overrides it). The prepare script
+    # requires `$PYTHON_BIN -m pip`, so a pip-less interpreter must fail doctor, not
+    # the first render.
+    python_bin = probe_env.get("PYTHON_BIN") or sys.executable
+    for module_name, version_args, fix in [
+        ("pip", ["-m", "pip", "--version"], f"{python_bin} -m ensurepip --upgrade"),
+        ("pytest", ["-m", "pytest", "--version"], "pip install -e '.[dev]'"),
+    ]:
+        probe = subprocess.run(
+            [python_bin, *version_args],
+            cwd=root,
+            env=probe_env,
+            check=False,
+            text=True,
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if probe.returncode == 0:
+            messages.append(f"{module_name}: {probe.stdout.strip()}")
+        else:
+            failures.append(f"{module_name} is not runnable for {python_bin} (fix: {fix})")
 
     spec_dir = root / config.specs_dir
     spec_paths = sorted(spec_dir.glob("*.mint.md"))

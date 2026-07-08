@@ -8,9 +8,6 @@ __pycache__/
 .mint/generated/*
 !.mint/generated/.gitkeep
 
-generated/*
-!generated/.gitkeep
-
 conformance/*
 !conformance/.gitkeep
 

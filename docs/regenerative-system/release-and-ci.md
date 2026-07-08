@@ -14,18 +14,19 @@ Development installs use pinned test tooling:
 python -m pip install -e ".[dev]"
 ```
 
-The release version is recorded in both `pyproject.toml` and `VERSION`, and exposed
-as `mint_cli.__version__`.
+The release version is single-sourced from the top-level `VERSION` file
+(`pyproject.toml` reads it dynamically) and exposed as `mint_cli.__version__`.
 
 ## Offline CI
 
-`.github/workflows/offline-ci.yml` runs on push and pull request with Python 3.12
-and Node 22, with no secrets:
+`.github/workflows/offline-ci.yml` runs on push and pull request across Python
+3.12 and 3.13, with no secrets and no Node setup (the offline TypeScript tests
+stub the toolchain with fakes on PATH):
 
 ```bash
 python -m pip install -e ".[dev]"
 mint doctor
-pytest --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q
+pytest -n auto --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q
 ```
 
 `MINT_LIVE=0` is set explicitly. Model specs use `ReplayClient` and the committed

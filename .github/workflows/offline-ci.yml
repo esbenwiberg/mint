@@ -32,5 +32,6 @@ jobs:
         run: mint doctor
       - name: Offline tests
         # -n auto parallelises the suite via pytest-xdist; the render tests are
-        # tmp_path-isolated so they are safe to run concurrently.
-        run: pytest -n auto --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q
+        # tmp_path-isolated so they are safe to run concurrently. --durations
+        # keeps the slowest tests visible so suite-runtime creep gets noticed.
+        run: pytest -n auto --durations=25 --cov=mint_cli --cov-report=term-missing:skip-covered --cov-fail-under=80 -q
