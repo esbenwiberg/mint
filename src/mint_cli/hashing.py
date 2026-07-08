@@ -44,6 +44,7 @@ def should_skip(relative_path: Path) -> bool:
     if parts[0] in {
         ".git",
         ".mintgen",
+        ".mint-deps",
         "__pycache__",
         ".pytest_cache",
         "node_modules",
@@ -53,7 +54,8 @@ def should_skip(relative_path: Path) -> bool:
     }:
         return True
     if any(
-        part in {"__pycache__", ".pytest_cache", "node_modules", ".vite", ".vitest", "coverage"}
+        part
+        in {".mint-deps", "__pycache__", ".pytest_cache", "node_modules", ".vite", ".vitest", "coverage"}
         for part in parts
     ):
         return True

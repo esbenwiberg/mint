@@ -149,7 +149,7 @@ Rules enforced by `specs.py` (each raises a `MintError` naming the file):
 | `nonFunctionalSpecHash` | IR minus functional units | full re-render trigger |
 | per-unit `textHash` | one unit's id/title/spec/acceptance/resources | per-unit re-render trigger |
 | `importedContextHash` | imported modules' shared context | full re-render trigger |
-| `requiredModuleCodeHash` | required modules' generated code | full re-render trigger |
+| `requiredModuleCodeHash` | required modules' public interface (the prompt context payload) | full re-render trigger |
 
 See [metadata-and-checkpoints.md](metadata-and-checkpoints.md) for how they're stored
 and compared.

@@ -12,10 +12,26 @@ Cassettes live under:
 resources/cassettes/v1/<cassette-id>.json
 ```
 
-The calc demo commits eleven replay cassettes: five for the clean graph render,
-one for the edited-evaluator slice proof, and five for the edited-lexer cascade
-proof. The self-hosting proof adds one cassette for `mint-hashing` FR1, so
-`mint doctor` should report twelve replay cassettes in this repository.
+The calc demo commits twelve replay cassettes: five for the clean graph render,
+one for the edited-evaluator slice proof, five for the interface-changing
+edited-lexer cascade proof, and one for the internal-only lexer edit that must
+NOT cascade. The self-hosting proof adds one cassette for `mint-hashing` FR1, so
+`mint doctor` should report thirteen replay cassettes in this repository.
+
+These cassettes are generated, not hand-maintained. Any change to prompt
+construction (system prompt, `build_prompt`, prompt hints, required-module
+context) makes all of them stale; regenerate them from the committed fixture
+responses and re-run the replay suites:
+
+```bash
+python scripts/regenerate_replay_cassettes.py
+pytest tests/test_calc_graph.py tests/test_self_hosting.py -q
+```
+
+The canned responses live in `resources/replay-fixtures/responses.json`, keyed
+`module/FRn` with `@variant` suffixes for the spec-edit scenarios. The script
+mirrors the replay tests' scenarios exactly and asserts the cascade semantics
+(interface change cascades, internal-only change does not) while recording.
 
 The cassette id is a stable SHA-256 hash of:
 

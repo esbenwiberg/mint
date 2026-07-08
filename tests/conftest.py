@@ -58,6 +58,8 @@ def _isolate_mint_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "MINT_CLAUDE_CLI_COMMAND",
         "MINT_CODEX_CLI_COMMAND",
         "MINT_CASSETTE_DIR",
+        "MINT_PY_INSTALL_COMMAND",
+        "MINT_TS_INSTALL_COMMAND",
     ):
         monkeypatch.delenv(name, raising=False)
 

@@ -221,7 +221,12 @@ def test_editing_later_unit_rerenders_only_that_slice(rendered_demo_project, mon
     assert after["functionalUnits"][1]["finishedCommit"] != fr2_commit
 
 
-def test_editing_required_module_cascades_to_dependent(rendered_demo_project, monkeypatch):
+def test_interface_stable_required_module_edit_does_not_cascade(rendered_demo_project, monkeypatch):
+    """requiredModuleCodeHash covers the required module's PUBLIC INTERFACE, not
+    its full source. The deterministic taskstore template emits the same public
+    code for this spec edit (only the private provenance file churns), so the
+    dependent must NOOP instead of re-rendering. The interface-changing cascade
+    path is covered by test_lexer_spec_edit_cascades_through_calc_graph."""
     demo_project = rendered_demo_project
     monkeypatch.chdir(demo_project.root)
     before = demo_project.metadata("tasklist")["requiredModuleCodeHash"]
@@ -237,12 +242,12 @@ def test_editing_required_module_cascades_to_dependent(rendered_demo_project, mo
 
     status, output = workflow.render_module("tasklist")
     assert status == 0, output
-    # taskstore re-renders the changed unit, then tasklist re-renders because the
-    # required module's generated code hash moved.
+    # taskstore re-renders the changed unit; tasklist sees an unchanged interface.
     assert "RENDER taskstore" in output
-    assert "required module code changed" in output
+    assert "NOOP tasklist" in output
+    assert "required module code changed" not in output
     after = demo_project.metadata("tasklist")["requiredModuleCodeHash"]
-    assert after != before
+    assert after == before
 
 
 def test_force_rerenders_all(rendered_demo_project, monkeypatch):

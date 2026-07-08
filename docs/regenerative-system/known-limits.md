@@ -53,10 +53,13 @@ What this system deliberately does *not* do yet, and where it would bite first.
    same-size regeneration served stale `.pyc` (a real bug found in development). Other
    stateful caches (import caches in long-lived processes, build artifacts, lockfiles)
    could reintroduce the class. Keep generated test runs hermetic.
-3. **Cross-module version skew.** `requiredModuleCodeHash` detects that a dependency
-   changed, but there is no API-compatibility check. A required module can change its
-   public API and the dependent will re-render against it — fine if the model/template
-   adapts, silent breakage if it doesn't until the gate catches it.
+3. **Cross-module version skew.** `requiredModuleCodeHash` detects that a dependency's
+   public interface changed, but there is no API-compatibility check. A required module
+   can change its public API and the dependent will re-render against it — fine if the
+   model/template adapts, silent breakage if it doesn't until the gate catches it. The
+   inverse gap is deliberate: an upstream *behavior* change behind a stable interface
+   does not re-run dependents' gates; use `mint render <dependent> --force` when
+   upstream semantics changed without a surface change.
 4. **Partial-render correctness under reordering.** Inserting a unit in the middle or
    renumbering shifts the plan boundary; the ascending-order rule helps, but heavy
    spec refactors are best handled with `--force`.

@@ -27,7 +27,7 @@ from .gitutil import (
     git_head,
     reset_hard,
 )
-from .hashing import hash_generated_files, hash_json
+from .hashing import hash_json
 from .modgraph import build_render_order
 from .renderer import (
     RenderRequest,
@@ -346,9 +346,16 @@ def compute_context_hashes(context: ModuleContext) -> ContextHashes:
     imported_hash = hash_json(imported)
 
     required_order = resolve_required_order(context)
+    # requiredModuleCodeHash covers exactly the context payload dependents' render
+    # prompts embed (adapter.required_context_files — public-interface stubs for
+    # Python). Internal-only upstream changes therefore neither alter this hash nor
+    # the dependents' prompts: no cascade re-render, and their cassettes stay valid.
     required_entries = sorted(
         (
-            {"module": module, "codeHash": hash_generated_files(context.generated_dir_for(module))}
+            {
+                "module": module,
+                "codeHash": hash_json(_required_context_entry(context, module)["files"]),
+            }
             for module in required_order
         ),
         key=lambda item: item["module"],
@@ -2093,6 +2100,7 @@ def render_one_unit(
             feedback=feedback,
             prompt_hints=adapter.prompt_hints(context, hashes.required_order),
             code_fence_language=adapter.code_fence_language,
+            module_files_so_far=_module_files_payload(context),
         )
 
     # ----- implementation + unit-test phase (one retry on failure) -----
@@ -2521,25 +2529,39 @@ def patch_feedback(failure: PatchAttemptFailure) -> str:
     )
 
 
+def _required_context_entry(context: ModuleContext, module: str) -> dict[str, Any]:
+    """The per-required-module context payload: what dependents' prompts embed AND
+    what requiredModuleCodeHash hashes. One source of truth so the cascade fires
+    exactly when the visible context changes."""
+    spec = parse_spec_file(context.spec_path(module))
+    adapter = adapter_for_stack(spec.stack)
+    return {
+        "module": module,
+        "files": adapter.required_context_files(context.generated_dir_for(module)),
+    }
+
+
 def _required_modules_payload(
     context: ModuleContext, required_order: tuple[str, ...]
 ) -> list[dict[str, Any]]:
-    payload: list[dict[str, Any]] = []
-    for module in required_order:
-        spec = parse_spec_file(context.spec_path(module))
-        adapter = adapter_for_stack(spec.stack)
-        module_dir = context.generated_dir_for(module)
-        files: list[dict[str, str]] = []
-        for path in adapter.required_payload_files(module_dir):
-            files.append(
-                {
-                    "path": path.relative_to(module_dir).as_posix(),
-                    "contents": path.read_text(encoding="utf-8"),
-                    "language": adapter.code_fence_language,
-                }
-            )
-        payload.append({"module": module, "files": files})
-    return payload
+    return [_required_context_entry(context, module) for module in required_order]
+
+
+def _module_files_payload(context: ModuleContext) -> list[dict[str, Any]]:
+    """The module's own generated files as they exist right now (full source, not
+    stubs — the model must extend this code, not just call it). Computed per render
+    request so later units and retry attempts see the current tree."""
+    adapter = context.stack_adapter
+    files: list[dict[str, Any]] = []
+    for path in adapter.required_payload_files(context.generated_dir):
+        files.append(
+            {
+                "path": path.relative_to(context.generated_dir).as_posix(),
+                "contents": path.read_text(encoding="utf-8"),
+                "language": adapter.code_fence_language,
+            }
+        )
+    return files
 
 
 FEEDBACK_MAX_CHARS = 16000

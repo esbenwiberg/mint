@@ -108,6 +108,44 @@ def test_reverting_spec_text_replays_original_cassette(make_project):
     assert "Completed FR2" in output
 
 
+def test_internal_only_lexer_edit_does_not_cascade(make_project):
+    """A spec edit whose regenerated code keeps the same public interface must
+    re-render only that module: dependents' prompts embed interface stubs, so the
+    requiredModuleCodeHash stays put and the downstream chain NOOPs (and their
+    replay cassettes stay valid)."""
+    project = make_calc_graph_project(make_project)
+    assert workflow.render_module("calc-cli", root=project.root)[0] == 0
+    before = {
+        module: project.metadata(module)["functionalUnits"][-1]["finishedCommit"]
+        for module in CALC_MODULES
+    }
+
+    spec_path = project.spec_path("lexer")
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace(
+            "Whitespace is ignored.",
+            "Whitespace is ignored between tokens.",
+        ),
+        encoding="utf-8",
+    )
+
+    status, output = workflow.render_module("calc-cli", root=project.root)
+
+    assert status == 0, output
+    assert "RENDER lexer" in output
+    assert "NOOP parser" in output
+    assert "NOOP evaluator" in output
+    assert "NOOP calc-cli" in output
+    assert "required module code changed" not in output
+    after = {
+        module: project.metadata(module)["functionalUnits"][-1]["finishedCommit"]
+        for module in CALC_MODULES
+    }
+    assert after["lexer"] != before["lexer"]
+    for module in ["parser", "evaluator", "calc-cli"]:
+        assert after[module] == before[module]
+
+
 def test_lexer_spec_edit_cascades_through_calc_graph(make_project):
     project = make_calc_graph_project(make_project)
     assert workflow.render_module("calc-cli", root=project.root)[0] == 0

@@ -44,7 +44,7 @@ TypeScript runs ignore package-manager/build state such as `node_modules`, `.vit
   "specHash": "…",                 // whole spec IR
   "nonFunctionalSpecHash": "…",    // IR minus functional units
   "importedContextHash": "…",      // imported modules' shared context
-  "requiredModuleCodeHash": "…",   // required modules' generated code
+  "requiredModuleCodeHash": "…",   // required modules' public interface
   "generatedCodeHash": "…",        // this module's own code
 
   "lastSuccessfulUnitId": "FR2",
@@ -77,7 +77,7 @@ from there to the end is rebuilt), or a no-op. In priority order:
 2. no metadata → full render
 3. `nonFunctionalSpecHash` changed → full render
 4. `importedContextHash` changed → full render
-5. `requiredModuleCodeHash` changed → full render
+5. `requiredModuleCodeHash` changed (a required module's public interface moved) → full render
 6. first unit whose `textHash` changed, is missing, or didn't pass → from there
 7. unit set size mismatch → full render
 8. otherwise → **no-op**
