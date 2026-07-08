@@ -51,29 +51,32 @@ query-lexer  ->  query-parser  ->  odata-emitter  ->  odq-cli
 | unknown operator / function | `EmitError` | `3` |
 | bad literal | `LexError` | `4` |
 
-## Render this graph (one-time live record, then offline)
+## Render this graph
 
-These are template-free model specs, so the first render records cassettes via a
-live provider (`claude-cli` / `sonnet` by default — uses your Claude Code auth).
-Run bottom-up from this directory:
+Cassettes are already recorded and committed under `resources/cassettes/`, so
+rendering replays offline — no provider, no network:
 
 ```bash
 cd examples/odq
-
-# 1. validate offline (already green)
-for m in query-lexer query-parser odata-emitter odq-cli; do mint lint "$m"; done
-
-# 2. record cassettes live, bottom-up (manual: calls a real model)
-MINT_LIVE=1 mint live-smoke query-lexer
-MINT_LIVE=1 mint live-smoke query-parser
-MINT_LIVE=1 mint live-smoke odata-emitter
-MINT_LIVE=1 mint live-smoke odq-cli
-
-# 3. from now on, render/replay is offline
-mint render odq-cli
-mint status odq-cli
+mint render odq-cli        # replays the whole graph in dependency order
 mint report odq-cli
 ```
 
-Recorded cassettes are written under `resources/cassettes/` and are meant to be
-committed next to the specs.
+Drive the built CLI:
+
+```bash
+G=.mint/generated
+PP="$PWD/$G/query-lexer/src:$PWD/$G/query-parser/src:$PWD/$G/odata-emitter/src:$PWD/$G/odq-cli/src"
+PYTHONPATH="$PP" python -m odq_cli.cli "status = 'Active' and enddate < 2026-01-01"
+# -> (status eq 'Active') and (enddate lt 2026-01-01)
+```
+
+### Re-recording after a spec change (manual, calls a real model)
+
+```bash
+MINT_LIVE=1 mint render <module> --range FR1:FR1   # one unit at a time, or
+MINT_LIVE=1 mint live-smoke <module>               # force a full re-record
+```
+
+Default provider is `claude-cli` / `sonnet` (uses your Claude Code auth). New
+cassettes are written under `resources/cassettes/` and should be committed.

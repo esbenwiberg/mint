@@ -68,28 +68,37 @@ Every fixture and example uses obviously fake values — names like `Ada`/`Nova`
 emails at the reserved `@example.test` domain, and a literal `demo-seed`. Do not
 put real personal or customer data into specs, tests, or cassettes.
 
-## Render this graph (one-time live record, then offline)
+## Render this graph
 
-Template-free model specs — the first render records cassettes via a live
-provider (`claude-cli` / `sonnet` by default). Run bottom-up from this directory:
+Cassettes are already recorded and committed under `resources/cassettes/`, so
+rendering replays offline — no provider, no network:
 
 ```bash
 cd examples/scrub
-
-# 1. validate offline (already green)
-for m in export-parser pseudonymizer writer scrub-cli; do mint lint "$m"; done
-
-# 2. record cassettes live, bottom-up (manual: calls a real model)
-MINT_LIVE=1 mint live-smoke export-parser
-MINT_LIVE=1 mint live-smoke pseudonymizer
-MINT_LIVE=1 mint live-smoke writer
-MINT_LIVE=1 mint live-smoke scrub-cli
-
-# 3. from now on, render/replay is offline
-mint render scrub-cli
-mint status scrub-cli
+mint render scrub-cli      # replays the whole graph in dependency order
 mint report scrub-cli
 ```
 
-Recorded cassettes are written under `resources/cassettes/` and are meant to be
-committed next to the specs.
+Drive the built CLI on fake data:
+
+```bash
+printf 'project,owner,owner_email,hourly_rate\n'\
+'Apollo,Ada Lovelace,ada@example.test,150\n'\
+'Zephyr,Ada Lovelace,ada@example.test,150\n' > export.csv
+printf '{"seed":"demo-seed","columns":{"owner":"name","owner_email":"email","hourly_rate":"rate"}}' > config.json
+
+G=.mint/generated
+PP="$PWD/$G/export-parser/src:$PWD/$G/pseudonymizer/src:$PWD/$G/writer/src:$PWD/$G/scrub-cli/src"
+PYTHONPATH="$PP" python -m scrub_cli.cli export.csv config.json
+# Ada Lovelace maps to the same pseudonym in both rows; owner/email/rate are faked.
+```
+
+### Re-recording after a spec change (manual, calls a real model)
+
+```bash
+MINT_LIVE=1 mint render <module> --range FR1:FR1   # one unit at a time, or
+MINT_LIVE=1 mint live-smoke <module>               # force a full re-record
+```
+
+Default provider is `claude-cli` / `sonnet` (uses your Claude Code auth). New
+cassettes are written under `resources/cassettes/` and should be committed.

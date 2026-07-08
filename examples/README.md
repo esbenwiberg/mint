@@ -37,27 +37,32 @@ so the cost is low and each example stays runnable in isolation. If these ever
 need to share one config, the alternative is to flatten all specs into the root
 `.mint/specs` and accept a single shared module namespace and cassette store.
 
-## Status: specs + lint + healthcheck green; render needs a one-time live record
+## Status: recorded and green — `mint render` replays offline
 
-The specs are complete and validated offline:
+Both graphs are fully recorded and verified:
 
-- `mint lint <module>` — **passes** for all eight modules.
-- `mint healthcheck <module>` — green on spec parse, stack, scripts, imports, and
-  transitive build order. The **only** reported failure is *"Replay cassettes
-  missing"*, because these are template-free model specs with no recorded
-  cassettes yet. `MINT_LIVE=1 mint healthcheck <module>` passes with no failures,
-  confirming that recording is the sole remaining step.
+- `mint lint <module>` and `mint doctor` — **pass** for all eight modules.
+- `mint healthcheck <module>` — **pass** offline; replay cassettes are committed
+  under each project's `resources/cassettes/`.
+- `mint render <module>` — replays offline (no provider, no network). The built
+  CLIs are verified end-to-end (see each tool's README).
 
-Ordinary `mint render` runs offline by replaying cassettes. New specs have none,
-so rendering requires a **one-time live recording** per project. That step is
-manual by design (it calls a real model provider) — see each tool's README for
-the exact bottom-up commands. After recording once, `mint render` replays
-offline and the cassettes are committed alongside the specs.
+The cassettes were recorded once against the `claude-cli` provider (model
+`sonnet`). You do not need to record anything to use these examples — just
+`mint render`.
 
-### Recording provider
+### Re-recording after a spec change
 
-The specs default to the `claude-cli` provider with model `sonnet`, so recording
-uses your existing Claude Code auth — no API key or extra install needed. To
-record with the Anthropic API instead, edit each spec's frontmatter to
-`rendererProvider: anthropic` / `rendererModel: <model-id>`, install the `live`
+Editing a spec changes the render prompt, so its cassettes go stale and
+`mint render` will ask you to re-record. That step is manual by design (it calls
+a real model provider):
+
+```bash
+MINT_LIVE=1 mint render <module> --range FR1:FR1   # one unit at a time, or
+MINT_LIVE=1 mint live-smoke <module>               # force a full re-record
+```
+
+The specs default to `claude-cli` / `sonnet` (uses your Claude Code auth — no API
+key needed). To record with the Anthropic API instead, set each spec's frontmatter
+to `rendererProvider: anthropic` / `rendererModel: <model-id>`, install the `live`
 extra, and export `ANTHROPIC_API_KEY`.
