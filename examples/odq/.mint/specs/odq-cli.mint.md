@@ -22,12 +22,14 @@ rendererPromptVersion: odq-v1
 - Print the compiled `$filter` string on stdout and exit 0 on success.
 - Map a bad literal (`LexError`) to exit code 4, a syntax error (`ParseError`) to exit code 2, and an unknown operator or function (`EmitError`) to exit code 3, each with a clean stderr message.
 - Unit tests use pytest.
+- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests drive the CLI as a subprocess.
 - Include a success case and each typed-error exit code.
+- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 

@@ -20,14 +20,17 @@ rendererPromptVersion: odq-v1
 - Expose `Token`, `LexError`, and `tokenize(text)` from `src/query_lexer/`.
 - Tokenize identifiers, the comparison operators `=`, `!=`, `<`, `<=`, `>`, `>=`, the keywords `and`, `or`, `not`, parentheses, commas, and function names.
 - Recognize single-quoted string literals, integer and decimal numbers, ISO dates written `YYYY-MM-DD`, and the booleans `true` and `false`.
+- Inside a single-quoted string, a doubled single quote `''` is an escaped literal quote: decode it to one `'` in the token value.
 - Raise `LexError` for an unterminated string, a malformed date, or an unexpected character.
 - Unit tests use pytest.
+- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests call only the public lexer API.
 - Include a valid token stream and bad-literal errors.
+- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 
@@ -36,9 +39,11 @@ rendererPromptVersion: odq-v1
   spec:
     - `tokenize("status = 'Active'")` returns tokens for an identifier, an equals operator, a string literal, and end-of-input.
     - Whitespace between tokens is ignored.
+    - A doubled single quote inside a string decodes to one literal quote in the value.
   acceptance:
     - `tokenize("status = 'Active'")` emits IDENT `status`, OP `=`, STRING `Active`, and EOF in that order.
     - `tokenize("a and b")` emits IDENT `a`, AND, IDENT `b`, and EOF in that order.
+    - `tokenize("name = 'O''Brien'")` emits a single STRING token whose value equals `O'Brien`.
 
 - id: FR2
   title: Reject bad literals

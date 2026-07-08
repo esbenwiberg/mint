@@ -24,12 +24,14 @@ rendererPromptVersion: scrub-v1
 - `pseudonymize_rows(rows)` replaces only the mapped columns and passes other columns through unchanged, operating on the required export-parser Row shape.
 - Map names to fake names, emails to fake `@example.test` addresses, and rates to stable fake numbers; raise `PseudonymizerError` for an unknown PII type.
 - Unit tests use pytest.
+- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests call only the public API.
 - Include a determinism check, a referential-integrity check, and an unknown-type error.
+- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 

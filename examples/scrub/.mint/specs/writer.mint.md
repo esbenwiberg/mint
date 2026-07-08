@@ -23,12 +23,14 @@ rendererPromptVersion: scrub-v1
 - Quote any value that contains a comma, a double quote, or a newline, following standard CSV quoting rules.
 - Raise `WriterError` when a row is missing a column named in the header.
 - Unit tests use pytest.
+- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests call only the public API.
 - Include a quoting case and a missing-column error.
+- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 
