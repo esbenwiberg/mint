@@ -1,11 +1,14 @@
 # Mint examples
 
-Two small, self-contained example tools built as Mint spec graphs:
+Three small, self-contained example tools built as Mint spec graphs:
 
 - [`odq/`](./odq) — a mini query DSL that compiles to OData `$filter` strings for
   the Dataverse Web API.
 - [`scrub/`](./scrub) — a deterministic, seeded project-data anonymizer for CSV
   exports.
+- [`timesheet/`](./timesheet) — a timesheet backend (FastAPI) + CLI with a
+  running-timer workflow, plus hand-written Claude Code hooks that meter coding
+  sessions into it.
 
 Each is written in the same style as the repo's `calc-cli` graph: model-backed
 `*.mint.md` specs, rendered one functional unit at a time, with typed errors and
@@ -20,7 +23,7 @@ Every example folder is a **separate Mint project** with its own `mint.yaml`,
 - **Spec discovery is flat and per-project.** Mint resolves a module at
   `<project>/<specsDir>/<module>.mint.md` and discovers specs with a
   non-recursive `*.mint.md` glob (see `doctor`/`next`). Nesting the examples
-  under one shared `.mint/specs` would force all eight modules into the root
+  under one shared `.mint/specs` would force all twelve modules into the root
   project's single flat namespace.
 - **Isolation of state.** Cassettes (`resources/cassettes/`), generated output,
   and conformance tests all resolve relative to the directory holding
@@ -39,9 +42,9 @@ need to share one config, the alternative is to flatten all specs into the root
 
 ## Status: recorded and green — `mint render` replays offline
 
-Both graphs are fully recorded and verified:
+All three graphs are fully recorded and verified:
 
-- `mint lint <module>` and `mint doctor` — **pass** for all eight modules.
+- `mint lint <module>` and `mint doctor` — **pass** for all twelve modules.
 - `mint healthcheck <module>` — **pass** offline; replay cassettes are committed
   under each project's `resources/cassettes/`.
 - `mint render <module>` — replays offline (no provider, no network). The built
