@@ -23,14 +23,12 @@ rendererPromptVersion: scrub-v1
 - Preserve column order and row order exactly as they appear in the input.
 - Raise `ParseError` when a data row has a different column count than the header, or when the input has no header.
 - Unit tests use pytest.
-- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests call only the public parser API.
 - Include a well-formed export and a ragged-row error.
-- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 

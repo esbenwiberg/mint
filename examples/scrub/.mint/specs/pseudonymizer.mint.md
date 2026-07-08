@@ -22,16 +22,15 @@ rendererPromptVersion: scrub-v1
 - Construct `Pseudonymizer(seed, mapping)` where `mapping` names each column's PII type as `name`, `email`, or `rate`.
 - `pseudonymize_value(column, value)` derives the fake value deterministically from the seed and the input value, so equal inputs yield equal outputs and a different seed yields a different output.
 - `pseudonymize_rows(rows)` replaces only the mapped columns and passes other columns through unchanged, operating on the required export-parser Row shape.
-- Map names to fake names, emails to fake `@example.test` addresses, and rates to stable fake numbers; raise `PseudonymizerError` for an unknown PII type.
+- Map names to fake names, emails to fake `@example.test` addresses, and rates to stable fake numbers.
+- Validate the column mapping eagerly: constructing `Pseudonymizer(seed, mapping)` with an unknown PII type raises `PseudonymizerError` immediately, before any value is pseudonymized.
 - Unit tests use pytest.
-- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests call only the public API.
 - Include a determinism check, a referential-integrity check, and an unknown-type error.
-- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 
@@ -54,8 +53,8 @@ rendererPromptVersion: scrub-v1
     - A `project` column absent from the mapping is copied so its output value equals its input value.
 
 - id: FR3
-  title: Reject unknown PII types
+  title: Reject unknown PII types at construction
   spec:
-    - Declaring a mapping with an unsupported PII type raises `PseudonymizerError`.
+    - Constructing a Pseudonymizer whose mapping declares an unsupported PII type raises `PseudonymizerError` from the constructor.
   acceptance:
     - `Pseudonymizer("demo-seed", {"ssn": "government-id"})` raises `PseudonymizerError` whose message contains `unknown PII type`.

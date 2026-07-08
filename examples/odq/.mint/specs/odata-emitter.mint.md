@@ -24,14 +24,12 @@ rendererPromptVersion: odq-v1
 - Escape single quotes inside string literals by doubling them; emit dates and numbers unquoted and booleans as `true` or `false`.
 - Support only the functions `contains` and `startswith`; raise `EmitError` for any other function or operator.
 - Unit tests use pytest.
-- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests call only the public emitter API.
 - Include an escaped-literal case and an unknown-function error.
-- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 

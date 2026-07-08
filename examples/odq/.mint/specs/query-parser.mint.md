@@ -22,14 +22,12 @@ rendererPromptVersion: odq-v1
 - Precedence binds `not` tighter than `and`, and `and` tighter than `or`; parentheses override precedence.
 - Build the tree from tokens produced by the required query-lexer module.
 - Unit tests use pytest.
-- Unit tests live in `tests/` and are named `test_*.py` so pytest discovers them; every functional unit ships at least one unit test.
 
 ## test
 
 - Conformance tests use pytest.
 - Conformance tests call only the public parser API.
 - Include precedence coverage and a syntax-error case.
-- Write only the current unit's conformance test, at the path `FRn/...` (for example `FR1/test_fr1.py`): the conformance patch root is already this module, so do not add a `tests/` or module-name prefix, and do not create or modify earlier units' conformance tests.
 
 ## functional
 
@@ -47,6 +45,8 @@ rendererPromptVersion: odq-v1
   spec:
     - `parse("contains(name, 'abc')")` builds a Call node named `contains` with a field argument and a string argument.
     - A comparison missing its right-hand side raises `ParseError`.
+    - Input with trailing tokens after a complete expression raises `ParseError`.
   acceptance:
     - `parse("contains(name, 'abc')")` returns a Call whose name equals `contains` with arguments `name` and `abc`.
     - `parse("status =")` raises `ParseError` whose message contains `expected`.
+    - `parse("a = 1 b")` raises `ParseError` whose message contains `end of input`.
