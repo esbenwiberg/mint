@@ -373,6 +373,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 
 import pytest
 
@@ -422,12 +423,17 @@ def count_generated_calls(frame, event, arg):
 
 
 previous_trace = sys.gettrace()
+previous_thread_trace = threading.gettrace()
+# Trace worker threads too: in-process test clients (fastapi/starlette TestClient)
+# run route handlers on anyio portal threads, which sys.settrace alone never sees.
 sys.settrace(count_generated_calls)
+threading.settrace(count_generated_calls)
 try:
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         exit_code = pytest.main(pytest_args)
 finally:
     sys.settrace(previous_trace)
+    threading.settrace(previous_thread_trace)
 
 def executable_lines(source_text, filename):
     # Bytecode-backed executable lines via code.co_lines(): excludes blank lines,
