@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import copy
 from dataclasses import dataclass
 import json
 import os
@@ -175,6 +177,13 @@ class StackAdapter(Protocol):
     def required_payload_files(self, module_dir: Path) -> list[Path]:
         ...
 
+    def required_context_files(self, module_dir: Path) -> list[dict[str, str]]:
+        """Files (path/contents/language) a *dependent* module's render prompt embeds
+        for this module — and the exact payload hashed into requiredModuleCodeHash.
+        Keeping prompt context and cascade hash the same object means dependents
+        re-render exactly when what they can see changes, and not otherwise."""
+        ...
+
     def prompt_hints(self, context: Any, required_order: tuple[str, ...]) -> list[str]:
         ...
 
@@ -245,6 +254,9 @@ class PythonStackAdapter:
         required_order: tuple[str, ...],
         rendered_unit_ids: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
+        install = self._ensure_dependencies_installed(context, required_order)
+        if install is not None:
+            return install
         return _run_project_script(
             context,
             context.config.scripts.unit,
@@ -254,11 +266,96 @@ class PythonStackAdapter:
     def run_conformance_tests(
         self, context: Any, *, required_order: tuple[str, ...]
     ) -> subprocess.CompletedProcess[str]:
+        install = self._ensure_dependencies_installed(context, required_order)
+        if install is not None:
+            return install
         return _run_project_script(
             context,
             context.config.scripts.conformance,
             env=self.script_env(context, self.required_runtime_paths(context, required_order)),
         )
+
+    def _ensure_dependencies_installed(
+        self, context: Any, required_order: tuple[str, ...]
+    ) -> subprocess.CompletedProcess[str] | None:
+        """Install third-party deps from the generated pyproject.toml into a
+        module-local ``.mint-deps`` dir, exposed to tests via the MINT_REQUIRED_SRC
+        path channel (see ``script_env``). Local required Mint modules already ride
+        PYTHONPATH, so they are filtered out rather than pip-resolved. Returns None
+        on success or nothing-to-do; a failed CompletedProcess (retryable renderer
+        feedback) when parsing or the install itself fails. Skips entirely when no
+        third-party deps are declared, so offline projects never touch pip."""
+        generated = context.generated_dir
+        pyproject = generated / "pyproject.toml"
+        if not pyproject.exists():
+            return None
+        try:
+            declared = _python_project_dependencies(pyproject)
+        except MintError as exc:
+            return subprocess.CompletedProcess(["mint", "python-deps"], 1, "", f"{exc}\n")
+        local = {_normalize_dist_name(context.module)}
+        local.update(_normalize_dist_name(module) for module in required_order)
+        requirements: list[str] = []
+        for dep in declared:
+            match = _REQUIREMENT_NAME_RE.match(dep)
+            if match is None:
+                return subprocess.CompletedProcess(
+                    ["mint", "python-deps"],
+                    1,
+                    "",
+                    f"Unparseable dependency {dep!r} in generated pyproject.toml "
+                    "[project] dependencies; use standard requirement syntax.\n",
+                )
+            if _normalize_dist_name(match.group(1)) in local:
+                continue
+            requirements.append(dep.strip())
+        if not requirements:
+            return None
+        target = generated / PY_DEPS_DIRNAME
+        marker = target / _PY_DEPS_MARKER
+        signature = json.dumps(sorted(requirements))
+        if marker.exists():
+            try:
+                if marker.read_text(encoding="utf-8") == signature:
+                    return None
+            except OSError:
+                pass
+        # Deps changed (or first install): rebuild from scratch so removed
+        # dependencies cannot linger and mask a missing declaration.
+        shutil.rmtree(target, ignore_errors=True)
+        _ensure_git_info_exclude(generated, (PY_DEPS_DIRNAME + "/",))
+        override = os.environ.get("MINT_PY_INSTALL_COMMAND")
+        if override:
+            command = shlex.split(override)
+        else:
+            python_bin = os.environ.get("PYTHON_BIN") or sys.executable
+            command = [
+                python_bin,
+                "-m",
+                "pip",
+                "install",
+                "--no-input",
+                "--target",
+                str(target),
+                *requirements,
+            ]
+        env = os.environ.copy()
+        env["MINT_PY_DEPS_TARGET"] = str(target)
+        env["MINT_PY_DEPS_REQUIREMENTS"] = os.pathsep.join(requirements)
+        result = _run_capture(
+            command,
+            cwd=generated,
+            env=env,
+            timeout=_timeout_seconds("MINT_INSTALL_TIMEOUT_SECONDS", _DEFAULT_INSTALL_TIMEOUT),
+        )
+        if result.returncode != 0:
+            return result
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            marker.write_text(signature, encoding="utf-8")
+        except OSError:
+            pass
+        return None
 
     def classify_test_result(
         self, phase: str, result: subprocess.CompletedProcess[str]
@@ -278,8 +375,50 @@ class PythonStackAdapter:
             return []
         return sorted(path for path in src.rglob("*.py") if path.is_file())
 
+    def required_context_files(self, module_dir: Path) -> list[dict[str, str]]:
+        # Dependents see the *public interface* (signatures + docstrings), not the
+        # implementation. Internal-only changes upstream therefore neither alter
+        # dependents' prompts (cassettes stay valid) nor their cascade hash.
+        files: list[dict[str, str]] = []
+        for path in self.required_payload_files(module_dir):
+            rel = path.relative_to(module_dir).as_posix()
+            name = path.name
+            if name != "__init__.py" and name.startswith("_"):
+                continue
+            files.append(
+                {
+                    "path": rel,
+                    "contents": python_interface_stub(path.read_text(encoding="utf-8")),
+                    "language": "python",
+                }
+            )
+        return files
+
     def prompt_hints(self, context: Any, required_order: tuple[str, ...]) -> list[str]:
-        return []
+        hints = [
+            "Write the implementation under src/ and generated unit tests under "
+            "tests/ named test_*.py (pytest discovery); every functional unit must "
+            "ship at least one unit test.",
+            "Write the conformance test for the CURRENT unit only, with root "
+            "'conformance', at the path FRn/... (for example FR1/test_fr1.py). Do not "
+            "add a tests/ or module-name prefix, and do not create or modify earlier "
+            "units' conformance tests.",
+            "Do not write outside the generated module patch root or conformance "
+            "patch root.",
+            "Grow the public API incrementally for the current unit and prior "
+            "rendered units; do not create placeholder stubs for future functional "
+            "units.",
+            "Declare third-party dependencies in the generated pyproject.toml "
+            "[project] dependencies; Mint installs them before tests run.",
+        ]
+        if required_order:
+            deps = ", ".join(required_order)
+            hints.append(
+                f"Required modules ({deps}) are shown as public interface stubs and "
+                "are importable by package name at test time; do not pip-depend on "
+                "them, and call them only through that public interface."
+            )
+        return hints
 
     def cleanup_runtime_caches(self, *roots: Path) -> None:
         for root in roots:
@@ -443,6 +582,18 @@ class TypeScriptStackAdapter:
                 )
             )
         return files
+
+    def required_context_files(self, module_dir: Path) -> list[dict[str, str]]:
+        # TypeScript dependents still see full source; interface-stub extraction for
+        # TS is future work (the compiler-AST signature finder above is the seed).
+        return [
+            {
+                "path": path.relative_to(module_dir).as_posix(),
+                "contents": path.read_text(encoding="utf-8"),
+                "language": self.code_fence_language,
+            }
+            for path in self.required_payload_files(module_dir)
+        ]
 
     def prompt_hints(self, context: Any, required_order: tuple[str, ...]) -> list[str]:
         hints = [
@@ -1173,6 +1324,181 @@ class TypeScriptStackAdapter:
             self.cleanup_runtime_caches(context.generated_dir, context.conformance_dir)
 
 
+# --------------------------------------------------------------------------- #
+# Python public-interface stubs (required-module prompt context + cascade hash)
+# --------------------------------------------------------------------------- #
+
+
+def python_interface_stub(source: str) -> str:
+    """Public-interface stub of a Python source file.
+
+    Keeps the module docstring, imports, public constants, and public class /
+    function signatures with their docstrings; every body becomes ``...``.
+    Derived purely from the AST, so it is deterministic and — crucially — stable
+    under internal-only edits (bodies, comments, private helpers). Falls back to
+    the full source when the file does not parse, so context is never silently
+    hidden behind a broken stub.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    body = list(tree.body)
+    lines: list[str] = []
+    docstring = ast.get_docstring(tree, clean=False)
+    if docstring is not None:
+        body = body[1:]
+        lines.append(_stub_docstring(docstring))
+    for node in body:
+        stub = _stub_statement(node)
+        if stub is not None:
+            lines.append(stub)
+    return ("\n\n".join(lines) + "\n") if lines else "...\n"
+
+
+def _stub_docstring(docstring: str) -> str:
+    if '"""' in docstring:
+        return ast.unparse(ast.Expr(ast.Constant(docstring)))
+    return f'"""{docstring}"""'
+
+
+def _is_public_name(name: str) -> bool:
+    # Single-underscore names are private; dunders (__all__, __init__, __eq__...)
+    # are part of the public contract.
+    return not name.startswith("_") or (name.startswith("__") and name.endswith("__"))
+
+
+def _stub_statement(node: ast.stmt) -> str | None:
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return ast.unparse(node)
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        return _stub_assignment(node)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not _is_public_name(node.name):
+            return None
+        return ast.unparse(_stub_function(node))
+    if isinstance(node, ast.ClassDef):
+        if not _is_public_name(node.name):
+            return None
+        return ast.unparse(_stub_class(node))
+    # Control flow (if TYPE_CHECKING:, try:), expression statements, etc. are
+    # implementation detail — dependents cannot rely on them.
+    return None
+
+
+def _stub_assignment(node: ast.Assign | ast.AnnAssign) -> str | None:
+    if isinstance(node, ast.AnnAssign):
+        targets = [node.target]
+    else:
+        targets = node.targets
+    names = [t.id for t in targets if isinstance(t, ast.Name)]
+    if len(names) != len(targets) or not names or not all(_is_public_name(n) for n in names):
+        return None
+    clone = copy.deepcopy(node)
+    if clone.value is not None and not _is_literal_expr(clone.value):
+        clone.value = ast.Constant(value=Ellipsis)
+    return ast.unparse(clone)
+
+
+def _is_literal_expr(node: ast.expr) -> bool:
+    allowed = (
+        ast.Constant,
+        ast.List,
+        ast.Tuple,
+        ast.Set,
+        ast.Dict,
+        ast.UnaryOp,
+        ast.unaryop,
+        ast.expr_context,
+    )
+    return all(isinstance(child, allowed) for child in ast.walk(node))
+
+
+def _stub_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.stmt:
+    clone = copy.deepcopy(node)
+    new_body: list[ast.stmt] = []
+    docstring = ast.get_docstring(clone, clean=False)
+    if docstring is not None:
+        new_body.append(ast.Expr(ast.Constant(docstring)))
+    new_body.append(ast.Expr(ast.Constant(value=Ellipsis)))
+    clone.body = new_body
+    return clone
+
+
+def _stub_class(node: ast.ClassDef) -> ast.stmt:
+    clone = copy.deepcopy(node)
+    new_body: list[ast.stmt] = []
+    docstring = ast.get_docstring(clone, clean=False)
+    members = clone.body[1:] if docstring is not None else clone.body
+    if docstring is not None:
+        new_body.append(ast.Expr(ast.Constant(docstring)))
+    for member in members:
+        if isinstance(member, (ast.Assign, ast.AnnAssign)):
+            stubbed = _stub_assignment(member)
+            if stubbed is not None:
+                new_body.append(ast.parse(stubbed).body[0])
+        elif isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if _is_public_name(member.name):
+                new_body.append(_stub_function(member))
+        elif isinstance(member, ast.ClassDef):
+            if _is_public_name(member.name):
+                new_body.append(_stub_class(member))
+    if not new_body:
+        new_body.append(ast.Expr(ast.Constant(value=Ellipsis)))
+    clone.body = new_body
+    return clone
+
+
+# --------------------------------------------------------------------------- #
+# Python third-party dependency install (module-local, PYTHONPATH-exposed)
+# --------------------------------------------------------------------------- #
+
+PY_DEPS_DIRNAME = ".mint-deps"
+_PY_DEPS_MARKER = ".mint-install.json"
+_REQUIREMENT_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _normalize_dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _python_project_dependencies(pyproject_path: Path) -> list[str]:
+    import tomllib
+
+    try:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise MintError(f"Generated pyproject.toml is invalid TOML: {exc}") from exc
+    project = data.get("project")
+    deps = project.get("dependencies", []) if isinstance(project, dict) else []
+    if not isinstance(deps, list):
+        raise MintError("Generated pyproject.toml [project] dependencies must be a list.")
+    return [str(dep) for dep in deps]
+
+
+def _ensure_git_info_exclude(module_dir: Path, entries: tuple[str, ...]) -> None:
+    """Ignore mint-owned runtime dirs in the generated repo via .git/info/exclude.
+
+    Keeps them out of ``git add -A`` checkpoints and safe from the retry-path
+    ``git clean -fd`` (which spares ignored files). The module's own .gitignore is
+    model-owned, so mint must not rely on it."""
+    git_dir = module_dir / ".git"
+    if not git_dir.is_dir():
+        return
+    exclude = git_dir / "info" / "exclude"
+    try:
+        existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        missing = [entry for entry in entries if entry not in existing.splitlines()]
+        if not missing:
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        exclude.write_text(existing + prefix + "\n".join(missing) + "\n", encoding="utf-8")
+    except OSError:
+        # Non-fatal: worst case the deps dir lands in a checkpoint commit.
+        pass
+
+
 _PYTHON = PythonStackAdapter()
 _TYPESCRIPT = TypeScriptStackAdapter()
 _ADAPTERS: tuple[StackAdapter, ...] = (_PYTHON, _TYPESCRIPT)
@@ -1198,8 +1524,15 @@ def script_env(context: Any, required_paths: list[Path]) -> dict[str, str]:
     env = os.environ.copy()
     env["MINT_GENERATED_DIR"] = str(context.generated_dir)
     env["MINT_CONFORMANCE_DIR"] = str(context.conformance_dir)
-    if required_paths:
-        env["MINT_REQUIRED_SRC"] = os.pathsep.join(str(path) for path in required_paths)
+    src_paths = [str(path) for path in required_paths]
+    # Module-local third-party deps ride the same path channel as required module
+    # sources, so project scripts, the conformance conftest, and the coverage trace
+    # all see them without any script changes.
+    deps_dir = context.generated_dir / PY_DEPS_DIRNAME
+    if deps_dir.is_dir():
+        src_paths.append(str(deps_dir))
+    if src_paths:
+        env["MINT_REQUIRED_SRC"] = os.pathsep.join(src_paths)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["MINT_SKIP_PYTEST_VERSION_CHECK"] = "1"
     env.setdefault("PYTHON_BIN", sys.executable)

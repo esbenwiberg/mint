@@ -20,10 +20,12 @@ def _m(path: str, contents: str) -> dict:
 def _provenance(request: RenderRequest, package: str) -> dict:
     """A generated provenance file that ties emitted code to the spec it came from.
 
-    Because its contents derive from every unit rendered so far (id, title, spec and
-    acceptance text), any meaningful spec change changes the generated code — which is
-    what makes a required module's ``requiredModuleCodeHash`` move and cascade to
-    dependents, mirroring how a real model renderer would emit different code.
+    Its contents derive from every unit rendered so far (id, title, spec and
+    acceptance text), so any meaningful spec change changes the generated tree and
+    the module's own ``generatedCodeHash``. It is deliberately a private module
+    (leading underscore): ``requiredModuleCodeHash`` now hashes the PUBLIC
+    interface a dependent can see, so provenance churn — like any internal-only
+    change — must not cascade re-renders downstream.
     """
     payload = {
         "module": request.module,

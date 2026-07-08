@@ -36,6 +36,10 @@ class RenderRequest:
     units_so_far: list[dict[str, Any]]
     current_unit: dict[str, Any]
     phase: str = "unit"
+    # The module's own generated files as they exist when this request is built,
+    # so later units (and retries) see the code prior units actually produced
+    # instead of re-guessing names from unit titles.
+    module_files_so_far: list[dict[str, Any]] = field(default_factory=list)
     attempt: int = 1
     feedback: str | None = None
     prompt_hints: list[str] = field(default_factory=list)

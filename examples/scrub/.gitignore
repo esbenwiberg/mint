@@ -1,0 +1,5 @@
+# Mint generated artifacts
+.mint/generated/*
+!.mint/generated/.gitkeep
+conformance/*
+!conformance/.gitkeep

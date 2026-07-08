@@ -264,6 +264,20 @@ def build_prompt(request: RenderRequest, prompt_version: str) -> str:
                 lines.append(contents)
                 lines.append(fence)
 
+    if request.module_files_so_far:
+        lines += ["", "## Current module files (already rendered for earlier units)"]
+        lines.append(
+            "Extend and stay consistent with this code; reuse its exact public names."
+        )
+        for f in request.module_files_so_far:
+            lines.append(f"#### {_require(f, 'path', 'current module file')}")
+            language = str(f.get("language") or request.code_fence_language or "text")
+            contents = str(f.get("contents", ""))
+            fence = _code_fence(contents)
+            lines.append(f"{fence}{language}")
+            lines.append(contents)
+            lines.append(fence)
+
     lines += ["", "## Units already rendered"]
     lines += [
         f"- {_require(u, 'id', 'rendered unit')}: {_require(u, 'title', 'rendered unit')}"

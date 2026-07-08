@@ -226,6 +226,30 @@ def test_build_prompt_includes_feedback():
     assert "Implement unit FR1" in prompt
 
 
+def test_build_prompt_includes_own_module_files_so_far():
+    prompt = build_prompt(
+        make_request(
+            module_files_so_far=[
+                {
+                    "path": "src/taskstore/store.py",
+                    "contents": "class TaskStore:\n    pass\n",
+                    "language": "python",
+                }
+            ]
+        ),
+        "v1",
+    )
+    assert "## Current module files (already rendered for earlier units)" in prompt
+    assert "#### src/taskstore/store.py" in prompt
+    assert "class TaskStore:" in prompt
+    assert "reuse its exact public names" in prompt
+
+
+def test_build_prompt_omits_own_module_section_when_empty():
+    prompt = build_prompt(make_request(), "v1")
+    assert "Current module files" not in prompt
+
+
 def test_build_prompt_includes_required_module_code_contents():
     prompt = build_prompt(
         make_request(
