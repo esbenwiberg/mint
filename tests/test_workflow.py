@@ -124,9 +124,10 @@ def test_render_top_module_renders_requirements_first(demo_project, monkeypatch)
         assert meta["functionalUnits"][0]["finishedCommit"]
 
 
-def test_second_render_is_noop(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    assert workflow.render_module("tasklist")[0] == 0
+def test_second_render_is_noop(rendered_demo_project, monkeypatch):
+    # Runs against a copied snapshot, which doubles as proof that content
+    # hashes are location-independent: a moved checkout must still no-op.
+    monkeypatch.chdir(rendered_demo_project.root)
     status, output = workflow.render_module("tasklist")
     assert status == 0
     assert "NOOP taskstore" in output and "NOOP tasklist" in output
@@ -159,9 +160,8 @@ def test_render_force_replaces_generated_dir_without_metadata(demo_project, monk
     assert demo_project.metadata("taskstore")["lastSuccessfulUnitId"] == "FR2"
 
 
-def test_metadata_records_hashes_attempts_commits(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    workflow.render_module("tasklist")
+def test_metadata_records_hashes_attempts_commits(rendered_demo_project):
+    demo_project = rendered_demo_project
     meta = demo_project.metadata("tasklist")
     assert meta["specHash"] and meta["nonFunctionalSpecHash"]
     assert meta["importedContextHash"] and meta["requiredModuleCodeHash"]
@@ -193,9 +193,9 @@ def test_metadata_records_hashes_attempts_commits(demo_project, monkeypatch):
     assert fr2["testQuality"]["coverage"]["percent"] >= 60
 
 
-def test_editing_later_unit_rerenders_only_that_slice(demo_project, monkeypatch):
+def test_editing_later_unit_rerenders_only_that_slice(rendered_demo_project, monkeypatch):
+    demo_project = rendered_demo_project
     monkeypatch.chdir(demo_project.root)
-    workflow.render_module("tasklist")
     before = demo_project.metadata("tasklist")
     fr1_commit = before["functionalUnits"][0]["finishedCommit"]
     fr2_commit = before["functionalUnits"][1]["finishedCommit"]
@@ -221,9 +221,9 @@ def test_editing_later_unit_rerenders_only_that_slice(demo_project, monkeypatch)
     assert after["functionalUnits"][1]["finishedCommit"] != fr2_commit
 
 
-def test_editing_required_module_cascades_to_dependent(demo_project, monkeypatch):
+def test_editing_required_module_cascades_to_dependent(rendered_demo_project, monkeypatch):
+    demo_project = rendered_demo_project
     monkeypatch.chdir(demo_project.root)
-    workflow.render_module("tasklist")
     before = demo_project.metadata("tasklist")["requiredModuleCodeHash"]
 
     spec = demo_project.spec_path("taskstore")
@@ -245,27 +245,24 @@ def test_editing_required_module_cascades_to_dependent(demo_project, monkeypatch
     assert after != before
 
 
-def test_force_rerenders_all(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    workflow.render_module("tasklist")
+def test_force_rerenders_all(rendered_demo_project, monkeypatch):
+    monkeypatch.chdir(rendered_demo_project.root)
     status, output = workflow.render_module("taskstore", force=True)
     assert status == 0
     assert "forced render" in output
     assert "Range: FR1:FR2" in output
 
 
-def test_range_renders_subset(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    workflow.render_module("taskstore")
+def test_range_renders_subset(rendered_demo_project, monkeypatch):
+    monkeypatch.chdir(rendered_demo_project.root)
     status, output = workflow.render_module("taskstore", unit_range="FR2:FR2")
     assert status == 0
     assert "explicit range" in output
     assert "Range: FR2:FR2" in output
 
 
-def test_prior_conformance_runs_as_regression(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    workflow.render_module("taskstore")
+def test_prior_conformance_runs_as_regression(rendered_demo_project):
+    demo_project = rendered_demo_project
     # The conformance attempt for FR2 must have collected FR1 + FR2 (regression).
     attempt = (
         demo_project.root
@@ -281,10 +278,8 @@ def test_prior_conformance_runs_as_regression(demo_project, monkeypatch):
     assert "2 passed" in stdout
 
 
-def test_caches_kept_out_of_checkpoint(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    workflow.render_module("taskstore")
-    gen = demo_project.root / ".mint" / "generated" / "taskstore"
+def test_caches_kept_out_of_checkpoint(rendered_demo_project):
+    gen = rendered_demo_project.root / ".mint" / "generated" / "taskstore"
     assert not list(gen.rglob("__pycache__"))
     assert not list(gen.rglob("*.pyc"))
 
@@ -294,9 +289,9 @@ def test_caches_kept_out_of_checkpoint(demo_project, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_clean_requires_yes(demo_project, monkeypatch):
+def test_clean_requires_yes(rendered_demo_project, monkeypatch):
+    demo_project = rendered_demo_project
     monkeypatch.chdir(demo_project.root)
-    workflow.render_module("taskstore")
     status, output = workflow.clean_module("taskstore", yes=False)
     assert status == 1 and "--yes" in output
     assert (demo_project.root / ".mint" / "generated" / "taskstore").exists()
@@ -306,9 +301,8 @@ def test_clean_requires_yes(demo_project, monkeypatch):
     assert not (demo_project.root / ".mint" / "generated" / "taskstore").exists()
 
 
-def test_inspect_shows_record_and_attempts(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    workflow.render_module("taskstore")
+def test_inspect_shows_record_and_attempts(rendered_demo_project, monkeypatch):
+    monkeypatch.chdir(rendered_demo_project.root)
     status, output = workflow.inspect_unit("taskstore", "FR1")
     assert status == 0
     assert "Unit: FR1" in output
@@ -316,9 +310,9 @@ def test_inspect_shows_record_and_attempts(demo_project, monkeypatch):
     assert "unit attempt=1" in output and "conformance attempt=1" in output
 
 
-def test_status_suggests_render_when_changed(demo_project, monkeypatch):
+def test_status_suggests_render_when_changed(rendered_demo_project, monkeypatch):
+    demo_project = rendered_demo_project
     monkeypatch.chdir(demo_project.root)
-    workflow.render_module("taskstore")
     out = workflow.status_module("taskstore")
     assert "Suggested render: no-op" in out
 
@@ -641,11 +635,8 @@ def test_next_guides_unrendered_valid_spec_to_render(demo_project):
     assert "Next command: mint render taskstore" in output
 
 
-def test_next_guides_current_render_to_report(demo_project, monkeypatch):
-    monkeypatch.chdir(demo_project.root)
-    assert workflow.render_module("taskstore")[0] == 0
-
-    status, output = workflow.next_module("taskstore", root=demo_project.root)
+def test_next_guides_current_render_to_report(rendered_demo_project):
+    status, output = workflow.next_module("taskstore", root=rendered_demo_project.root)
 
     assert status == 0
     assert "State: generated output is current" in output
@@ -920,10 +911,9 @@ def test_healthcheck_fails_for_local_spec_without_template(make_project):
     assert "MINT_LIVE=1 mint live-smoke notes" in output
 
 
-def test_render_writes_run_report_and_report_command_reads_it(demo_project, monkeypatch):
+def test_render_writes_run_report_and_report_command_reads_it(rendered_demo_project, monkeypatch):
+    demo_project = rendered_demo_project
     monkeypatch.chdir(demo_project.root)
-    status, output = workflow.render_module("taskstore")
-    assert status == 0, output
 
     report_path = demo_project.root / ".mint" / "generated" / "taskstore" / ".mintgen" / "reports" / "latest.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
