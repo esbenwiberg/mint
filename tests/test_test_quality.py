@@ -91,3 +91,69 @@ def test_internal_python_script_env_skips_redundant_pytest_probe(tmp_path):
 
     assert direct_env["MINT_SKIP_PYTEST_VERSION_CHECK"] == "1"
     assert adapter_env["MINT_SKIP_PYTEST_VERSION_CHECK"] == "1"
+
+
+def test_coverage_trace_counts_lines_run_in_worker_threads(tmp_path):
+    # In-process HTTP test clients (fastapi/starlette TestClient) execute route
+    # handlers on anyio portal threads. sys.settrace alone never sees those
+    # frames, so generated code exercised only through such a client measured as
+    # uncovered; the trace runner must install threading.settrace as well.
+    generated = tmp_path / ".mint" / "generated" / "threaded-mod"
+    conformance = tmp_path / "conformance" / "threaded-mod"
+    src = generated / "src" / "threaded_mod"
+    src.mkdir(parents=True)
+    (generated / "tests").mkdir()
+    conformance.mkdir(parents=True)
+    (src / "__init__.py").write_text(
+        "import threading\n"
+        "\n"
+        "\n"
+        "def compute():\n"
+        "    value = 2 + 3\n"
+        "    return value * 2\n"
+        "\n"
+        "\n"
+        "def run_in_thread():\n"
+        "    results = []\n"
+        "\n"
+        "    def worker():\n"
+        "        results.append(compute())\n"
+        "\n"
+        "    thread = threading.Thread(target=worker)\n"
+        "    thread.start()\n"
+        "    thread.join()\n"
+        "    return results[0]\n",
+        encoding="utf-8",
+    )
+    (generated / "tests" / "test_threaded.py").write_text(
+        "from threaded_mod import run_in_thread\n"
+        "\n"
+        "\n"
+        "def test_run_in_thread():\n"
+        "    assert run_in_thread() == 10\n",
+        encoding="utf-8",
+    )
+    (conformance / "test_conformance.py").write_text(
+        "from threaded_mod import run_in_thread\n"
+        "\n"
+        "\n"
+        "def test_conformance():\n"
+        "    assert run_in_thread() == 10\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace(
+        root=tmp_path,
+        module="threaded-mod",
+        generated_dir=generated,
+        conformance_dir=conformance,
+        config=SimpleNamespace(
+            test_quality=SimpleNamespace(min_coverage_percent=60),
+        ),
+    )
+
+    verdict = test_quality._measure_coverage(context, required_src=[])
+
+    assert verdict["status"] == "passed"
+    # compute()'s body runs only on the worker thread; if the trace misses
+    # threads, these lines drop out and coverage collapses to import-time lines.
+    assert verdict["percent"] == 100.0
