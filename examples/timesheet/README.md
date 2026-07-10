@@ -1,4 +1,4 @@
-# timesheet — session-metered timesheet backend + CLI
+# timesheet — session-metered timesheet backend, CLI, and web UI
 
 A small timesheet system built as a Mint spec graph, plus hand-written Claude
 Code glue that meters coding sessions automatically: a SessionStart hook starts
@@ -18,8 +18,8 @@ timesheet submit 2                                   # draft -> submitted
 
 ```text
 timestore ─┬─> timesheet-api
-rules ─────┤
-           └─> timesheet-cli
+rules ─────┼─> timesheet-cli
+           └─> timesheet-web <─── ui-kit
 ```
 
 - **timestore** — JSON-file-backed store of entries
@@ -36,6 +36,31 @@ rules ─────┤
 - **timesheet-cli** — the `timesheet` command: `add`, `list`, `start`, `stop`,
   `status`, `submit`. Timer file path from `TIMESHEET_TIMER`; `stop` rounds to
   the nearest 0.1h (minimum 0.1) and books the entry via timestore.
+- **ui-kit** — the design system as data: `TOKENS_CSS` (a string constant
+  pinning every color, spacing, and type token in its spec's acceptance
+  bullets) and the `page(title, body)` HTML shell. Stdlib only.
+- **timesheet-web** — FastAPI app factory `create_web_app(store_path)` serving
+  a server-rendered HTML UI: entries table with status badges, week/project
+  filters, an add form, and submit/approve/reject buttons per row.
+
+### How the web UI keeps the same look across renders
+
+Two mechanisms, both mint-native:
+
+1. **Replay determinism** — committed cassettes make `mint render` byte-stable;
+   the UI only changes when a spec changes and someone re-records live.
+2. **The style lock** — the look lives in ui-kit, not in timesheet-web. The
+   Python interface stub keeps public *literal* constants verbatim, so
+   dependents see the full `TOKENS_CSS` in their render prompt and it is hashed
+   into `requiredModuleCodeHash`. The timesheet-web spec then forbids freelance
+   styling — no `<style>` of its own, no `style=` attributes, only `ts-*`
+   classes — and its conformance tests enforce that mechanically. A live
+   re-render may reshuffle markup, but the skin cannot drift; restyling the app
+   means editing ui-kit's spec, which cascades a re-render of its dependents.
+
+Semantics conformance can grip (routes, `data-testid` hooks, escaped output,
+status codes) are pinned in acceptance bullets; pixels are never asserted —
+screenshot tests would fail every legitimate re-render by design.
 
 ### CLI exit codes
 
@@ -68,7 +93,22 @@ replays offline — no provider, no network:
 cd examples/timesheet
 mint render timesheet-api    # timestore, rules, timesheet-api
 mint render timesheet-cli    # NOOPs the shared deps, renders the CLI
-mint report timesheet-cli
+mint render timesheet-web    # NOOPs again, renders ui-kit + the web UI
+mint report timesheet-web
+```
+
+Serve the web UI in a real browser (dev only — conformance never starts a
+server; `uvicorn` is your dev tool, not a module dependency):
+
+```bash
+python3.12 -m pip install uvicorn
+G=$PWD/.mint/generated
+PYTHONPATH="$G/timesheet-web/src:$G/timestore/src:$G/rules/src:$G/ui-kit/src:$G/timesheet-web/.mint-deps" \
+  python3.12 -c "
+import uvicorn
+from timesheet_web import create_web_app
+uvicorn.run(create_web_app('/tmp/ts-web-store.json'), port=8000)
+"
 ```
 
 Drive the built CLI:
