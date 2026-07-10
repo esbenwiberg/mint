@@ -181,6 +181,7 @@ conformance/                  Ignored generated conformance tests
 - `mint inspect <module> <FRN>` shows a unit record and attempt history.
 - `mint report <module>` prints the latest run report.
 - `mint clean <module> --yes` removes generated output for a module.
+- `mint prune [--yes]` deletes replay cassettes no rendered module references.
 
 See `docs/regenerative-system/commands.md` for the full command guide.
 
@@ -198,6 +199,10 @@ and Vitest. See `docs/regenerative-system/typescript.md` for the package contrac
 and current TS limits.
 
 ## Documentation
+
+For writing good specs — testable acceptance, blast-radius-aware section
+placement, the UI style-lock pattern, and the record/replay/prune workflow —
+read `docs/spec-authoring.md`.
 
 Start with `docs/regenerative-system/README.md`. That directory documents the
 system as built:

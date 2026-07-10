@@ -2,16 +2,11 @@
 # Claude Code SessionStart hook: start a timesheet timer for this session.
 #
 # Fail-soft by design: a broken timesheet must never break a session, so every
-# path out of this script is exit 0. Identity comes from env vars only:
-#   TIMESHEET_PERSON   required; without it the hook does nothing
+# path out of this script is exit 0. The timesheet is a personal, single-user
+# app — no identity env var is needed:
 #   TIMESHEET_PROJECT  optional; defaults to the repo directory name
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-PERSON="${TIMESHEET_PERSON:-}"
-if [ -z "$PERSON" ]; then
-  exit 0
-fi
 
 PROJECT="${TIMESHEET_PROJECT:-}"
 if [ -z "$PROJECT" ]; then
@@ -20,5 +15,5 @@ fi
 
 # Exit 4 (timer already running, e.g. a second concurrent session) and any
 # missing-module failure are deliberately swallowed.
-"$HERE/timesheet.sh" start "$PERSON" "$PROJECT" >/dev/null 2>&1 || true
+"$HERE/timesheet.sh" start "$PROJECT" >/dev/null 2>&1 || true
 exit 0

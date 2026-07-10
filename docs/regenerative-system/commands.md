@@ -262,6 +262,22 @@ Remove the module's generated output and conformance tests. Refuses without `--y
 mint clean tasklist --yes
 ```
 
+## `mint prune [--yes]`
+
+Delete replay cassettes no rendered module references. Re-recording a unit
+orphans its old cassettes; nothing else cleans them up. Cassette ids are prompt
+hashes and a unit's prompt embeds earlier units' generated code plus runtime
+test feedback, so the live set is only knowable from an up-to-date render:
+prune refuses while any module's generated output is stale or missing. Without
+`--yes` it lists the orphans and deletes nothing. It also warns when a
+referenced cassette is missing from `resources/cassettes` (a fresh clone could
+not replay).
+
+```bash
+mint prune          # dry run: list orphans
+mint prune --yes    # delete them
+```
+
 ## End-to-end demo
 
 ```bash

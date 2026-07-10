@@ -1841,6 +1841,108 @@ def clean_module(module: str, yes: bool = False) -> tuple[int, str]:
     return 0, f"CLEAN {module}\n" + "".join(f"- Removed {path}\n" for path in removed)
 
 
+def prune_project(*, root: Path | None = None, yes: bool = False) -> tuple[int, str]:
+    """Delete replay cassettes that no rendered module references.
+
+    A cassette id is the hash of a full render prompt, and a unit's prompt embeds
+    the generated code of earlier units plus runtime test feedback — so the live
+    set cannot be computed from specs alone. It is only knowable from the attempt
+    manifests of an up-to-date render. Prune therefore refuses while any module's
+    generated output is stale or missing, then unions the manifests' cassette ids
+    and removes every cassette file outside that set.
+    """
+    root = (root or Path.cwd()).resolve()
+    config = load_config(root / "mint.yaml")
+    spec_paths = sorted((root / config.specs_dir).glob("*.mint.md"))
+    if not spec_paths:
+        return 1, "FAIL prune\n- Project has no specs; nothing to derive cassette usage from.\n"
+
+    failures: list[str] = []
+    referenced: set[str] = set()
+    verified = 0
+    for spec_path in spec_paths:
+        try:
+            module = parse_spec_file(spec_path).module
+            context = load_context(module, root)
+        except MintError as exc:
+            failures.append(str(exc))
+            continue
+        metadata = load_metadata(context.generated_dir)
+        if metadata is None:
+            failures.append(
+                f"{module}: no generated output to derive cassette usage from "
+                f"(fix: mint render {module})"
+            )
+            continue
+        hashes = compute_context_hashes(context)
+        plan = determine_render_plan(context, metadata, None, None, False, hashes)
+        if not plan.noop:
+            failures.append(
+                f"{module}: generated output is not current — {plan.reason} "
+                f"(fix: mint render {module})"
+            )
+            continue
+        verified += 1
+        for record in metadata.get("functionalUnits", []):
+            if not isinstance(record, dict):
+                continue
+            attempts_dir = (
+                context.generated_dir / ".mintgen" / "attempts" / str(record.get("id", ""))
+            )
+            if not attempts_dir.exists():
+                continue
+            for manifest_path in _attempt_manifest_paths(attempts_dir):
+                try:
+                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                cassette = data.get("cassetteId") if isinstance(data, dict) else None
+                if isinstance(cassette, str) and cassette:
+                    referenced.add(cassette)
+
+    if failures:
+        lines = ["FAIL prune", *(f"- {failure}" for failure in failures)]
+        lines.append(
+            "- Prune deletes cassettes based on what current renders reference; "
+            "it refuses while any module is stale."
+        )
+        return 1, "\n".join(lines) + "\n"
+
+    cassette_root = root / "resources" / "cassettes"
+    on_disk = sorted(cassette_root.rglob("*.json")) if cassette_root.exists() else []
+    stems_on_disk = {path.stem for path in on_disk}
+    orphans = [path for path in on_disk if path.stem not in referenced]
+    missing = sorted(referenced - stems_on_disk)
+
+    lines = [
+        "PRUNE",
+        f"- Modules verified current: {verified}",
+        f"- Cassettes referenced: {len(referenced & stems_on_disk)}",
+        f"- Cassettes on disk: {len(on_disk)}",
+        f"- Orphans: {len(orphans)}",
+    ]
+    if missing:
+        lines.append(
+            f"- WARN: {len(missing)} referenced cassettes are missing from "
+            "resources/cassettes; a fresh clone cannot replay until they are "
+            "restored or re-recorded."
+        )
+    if not orphans:
+        lines.append("- Nothing to prune.")
+        return 0, "\n".join(lines) + "\n"
+    for path in orphans:
+        rel = path.relative_to(root).as_posix()
+        if yes:
+            path.unlink()
+            lines.append(f"- Removed {rel}")
+        else:
+            lines.append(f"- Orphan {rel}")
+    if not yes:
+        lines.append("Refusing to delete without --yes. Re-run: mint prune --yes")
+        return 1, "\n".join(lines) + "\n"
+    return 0, "\n".join(lines) + "\n"
+
+
 def inspect_unit(module: str, unit_id: str) -> tuple[int, str]:
     context = load_context(module)
     unit = find_unit(context.spec, unit_id)

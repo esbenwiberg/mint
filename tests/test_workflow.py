@@ -306,6 +306,72 @@ def test_clean_requires_yes(rendered_demo_project, monkeypatch):
     assert not (demo_project.root / ".mint" / "generated" / "taskstore").exists()
 
 
+def _seed_cassettes(project, names):
+    cassette_dir = project.root / "resources" / "cassettes" / "v1"
+    cassette_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (cassette_dir / f"{name}.json").write_text("{}", encoding="utf-8")
+    return cassette_dir
+
+
+def _stamp_cassette_id(project, module, unit_id, cassette):
+    attempts_dir = project.root / ".mint" / "generated" / module / ".mintgen" / "attempts" / unit_id
+    manifest = workflow._attempt_manifest_paths(attempts_dir)[0]
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["cassetteId"] = cassette
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_prune_lists_then_deletes_orphans(rendered_demo_project, monkeypatch):
+    project = rendered_demo_project
+    monkeypatch.chdir(project.root)
+    cassette_dir = _seed_cassettes(project, ["used", "orphan"])
+    _stamp_cassette_id(project, "taskstore", "FR1", "used")
+
+    status, output = workflow.prune_project(yes=False)
+    assert status == 1
+    assert "Orphan resources/cassettes/v1/orphan.json" in output
+    assert "used.json" not in output.replace("Cassettes", "")
+    assert "--yes" in output
+    assert (cassette_dir / "orphan.json").exists()
+
+    status, output = workflow.prune_project(yes=True)
+    assert status == 0
+    assert "Removed resources/cassettes/v1/orphan.json" in output
+    assert not (cassette_dir / "orphan.json").exists()
+    assert (cassette_dir / "used.json").exists()
+
+
+def test_prune_refuses_while_a_module_is_stale(rendered_demo_project, monkeypatch):
+    project = rendered_demo_project
+    monkeypatch.chdir(project.root)
+    _seed_cassettes(project, ["orphan"])
+    spec_path = project.spec_path("tasklist")
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace(
+            "title: ", "title: Retitled ", 1
+        ),
+        encoding="utf-8",
+    )
+
+    status, output = workflow.prune_project(yes=True)
+    assert status == 1
+    assert "tasklist" in output and "not current" in output
+    assert (project.root / "resources" / "cassettes" / "v1" / "orphan.json").exists()
+
+
+def test_prune_warns_on_missing_referenced_cassette(rendered_demo_project, monkeypatch):
+    project = rendered_demo_project
+    monkeypatch.chdir(project.root)
+    _seed_cassettes(project, [])
+    _stamp_cassette_id(project, "taskstore", "FR1", "recorded-but-deleted")
+
+    status, output = workflow.prune_project(yes=False)
+    assert status == 0
+    assert "WARN" in output and "missing" in output
+    assert "Nothing to prune." in output
+
+
 def test_inspect_shows_record_and_attempts(rendered_demo_project, monkeypatch):
     monkeypatch.chdir(rendered_demo_project.root)
     status, output = workflow.inspect_unit("taskstore", "FR1")

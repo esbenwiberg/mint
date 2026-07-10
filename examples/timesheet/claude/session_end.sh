@@ -8,9 +8,5 @@
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ -z "${TIMESHEET_PERSON:-}" ]; then
-  exit 0
-fi
-
 "$HERE/timesheet.sh" stop >/dev/null 2>&1 || true
 exit 0

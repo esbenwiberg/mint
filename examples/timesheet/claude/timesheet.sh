@@ -35,4 +35,6 @@ mkdir -p "$(dirname "$TIMESHEET_STORE")" "$(dirname "$TIMESHEET_TIMER")"
 
 export PYTHONPATH="$GENERATED/timesheet-cli/src:$GENERATED/timestore/src:$GENERATED/rules/src${PYTHONPATH:+:$PYTHONPATH}"
 
-exec "$PYTHON_BIN" -m timesheet_cli.cli "$@"
+# -m timesheet_cli (not a submodule path): the spec pins the package name and
+# main(argv=None); the internal module layout is the renderer's to choose.
+exec "$PYTHON_BIN" -m timesheet_cli "$@"

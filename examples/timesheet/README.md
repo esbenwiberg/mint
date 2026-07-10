@@ -1,15 +1,16 @@
-# timesheet — session-metered timesheet backend + CLI
+# timesheet — session-metered personal timesheet: backend, CLI, and web UI
 
-A small timesheet system built as a Mint spec graph, plus hand-written Claude
-Code glue that meters coding sessions automatically: a SessionStart hook starts
-a timer, a SessionEnd hook stops it and books the elapsed time as a draft
-entry.
+A small single-user timesheet built as a Mint spec graph, plus hand-written
+Claude Code glue that meters coding sessions automatically: a SessionStart hook
+starts a timer, a SessionEnd hook stops it and books the elapsed time as a
+draft entry. It is a personal app — there is no user identity anywhere, just
+projects, dates, and hours.
 
 ```bash
-timesheet add "Ada Lovelace" Apollo 2026-07-06 2.5   # book time by hand
-timesheet start "Ada Lovelace" Apollo                # ... or run a timer
-timesheet stop                                       # -> #2 Ada Lovelace Apollo 2026-07-08 1.5h draft
-timesheet submit 2                                   # draft -> submitted
+timesheet add Apollo 2026-07-06 2.5   # book time by hand
+timesheet start Apollo                # ... or run a timer
+timesheet stop                        # -> #2 Apollo 2026-07-08 1.5h draft
+timesheet submit 2                    # draft -> submitted
 ```
 
 ## Module graph
@@ -18,16 +19,16 @@ timesheet submit 2                                   # draft -> submitted
 
 ```text
 timestore ─┬─> timesheet-api
-rules ─────┤
-           └─> timesheet-cli
+rules ─────┼─> timesheet-cli
+           └─> timesheet-web <─── ui-kit
 ```
 
 - **timestore** — JSON-file-backed store of entries
-  `{id, person, project, date, hours, status}`; CRUD plus queries by project
+  `{id, project, date, hours, status}`; CRUD plus queries by project, by date,
   and by ISO week (`2026-W28`); store path from `TIMESHEET_STORE`; typed
   `StoreError`. Stdlib only.
-- **rules** — pure functions, no I/O: `validate_hours` (positive, and a
-  person's day total capped at exactly 24), the approval state machine
+- **rules** — pure functions, no I/O: `validate_hours` (positive, and a day's
+  total capped at exactly 24), the approval state machine
   `draft -> submitted -> approved | rejected`, and `assert_editable` (approved
   entries are immutable); typed `RuleError`.
 - **timesheet-api** — FastAPI app factory `create_app(store_path)` composing
@@ -36,6 +37,33 @@ rules ─────┤
 - **timesheet-cli** — the `timesheet` command: `add`, `list`, `start`, `stop`,
   `status`, `submit`. Timer file path from `TIMESHEET_TIMER`; `stop` rounds to
   the nearest 0.1h (minimum 0.1) and books the entry via timestore.
+- **ui-kit** — the design system as data: `TOKENS_CSS` (a string constant
+  pinning every color, spacing, shadow, and type token in its spec's acceptance
+  bullets) and the `page(title, body)` HTML shell. Stdlib only.
+- **timesheet-web** — FastAPI app factory `create_web_app(store_path)` serving
+  a server-rendered HTML UI: a filter toolbar (week/project), an entries card
+  with status pills and a running hours total, an add form, and per-row actions
+  that only offer the legal transitions (draft → Submit; submitted →
+  Approve/Reject; terminal statuses → none).
+
+### How the web UI keeps the same look across renders
+
+Two mechanisms, both mint-native:
+
+1. **Replay determinism** — committed cassettes make `mint render` byte-stable;
+   the UI only changes when a spec changes and someone re-records live.
+2. **The style lock** — the look lives in ui-kit, not in timesheet-web. The
+   Python interface stub keeps public *literal* constants verbatim, so
+   dependents see the full `TOKENS_CSS` in their render prompt and it is hashed
+   into `requiredModuleCodeHash`. The timesheet-web spec then forbids freelance
+   styling — no `<style>` of its own, no `style=` attributes, only `ts-*`
+   classes — and its conformance tests enforce that mechanically. A live
+   re-render may reshuffle markup, but the skin cannot drift; restyling the app
+   means editing ui-kit's spec, which cascades a re-render of its dependents.
+
+Semantics conformance can grip (routes, `data-testid` hooks, escaped output,
+status codes) are pinned in acceptance bullets; pixels are never asserted —
+screenshot tests would fail every legitimate re-render by design.
 
 ### CLI exit codes
 
@@ -68,7 +96,22 @@ replays offline — no provider, no network:
 cd examples/timesheet
 mint render timesheet-api    # timestore, rules, timesheet-api
 mint render timesheet-cli    # NOOPs the shared deps, renders the CLI
-mint report timesheet-cli
+mint render timesheet-web    # NOOPs again, renders ui-kit + the web UI
+mint report timesheet-web
+```
+
+Serve the web UI in a real browser (dev only — conformance never starts a
+server; `uvicorn` is your dev tool, not a module dependency):
+
+```bash
+python3.12 -m pip install uvicorn
+G=$PWD/.mint/generated
+PYTHONPATH="$G/timesheet-web/src:$G/timestore/src:$G/rules/src:$G/ui-kit/src:$G/timesheet-web/.mint-deps" \
+  python3.12 -c "
+import uvicorn
+from timesheet_web import create_web_app
+uvicorn.run(create_web_app('/tmp/ts-web-store.json'), port=8000)
+"
 ```
 
 Drive the built CLI:
@@ -77,9 +120,13 @@ Drive the built CLI:
 G=.mint/generated
 PP="$PWD/$G/timesheet-cli/src:$PWD/$G/timestore/src:$PWD/$G/rules/src"
 export TIMESHEET_STORE=/tmp/ts-store.json TIMESHEET_TIMER=/tmp/ts-timer.json
-PYTHONPATH="$PP" python -m timesheet_cli.cli add "Ada Lovelace" Apollo 2026-07-06 2.5
-PYTHONPATH="$PP" python -m timesheet_cli.cli list --week 2026-W28
+PYTHONPATH="$PP" python -m timesheet_cli add Apollo 2026-07-06 2.5
+PYTHONPATH="$PP" python -m timesheet_cli list --week 2026-W28
 ```
+
+(`-m timesheet_cli`, not a submodule path: the spec pins the package name and
+`main(argv=None)`; the internal module layout is the renderer's to choose and
+has changed between recordings.)
 
 Drive the API in-process (the conformance style — never a server subprocess):
 
@@ -89,7 +136,7 @@ PYTHONPATH="$PP" python -c "
 from fastapi.testclient import TestClient
 from timesheet_api import create_app
 c = TestClient(create_app('/tmp/ts-api-store.json'))
-print(c.post('/entries', json={'person': 'Ada Lovelace', 'project': 'Apollo',
+print(c.post('/entries', json={'project': 'Apollo',
                                'date': '2026-07-06', 'hours': 6.0}).json())
 "
 ```
@@ -103,6 +150,8 @@ MINT_LIVE=1 mint live-smoke <module>               # force a full re-record
 
 Default provider is `claude-cli` / `sonnet` (uses your Claude Code auth). New
 cassettes are written under `resources/cassettes/` and should be committed.
+Re-recording orphans the replaced cassettes — run `mint prune --yes` (after
+everything renders NOOP) to delete them, then re-verify a wipe-and-replay.
 
 ## Claude Code integration (hand-written glue)
 
@@ -113,14 +162,14 @@ it is environment wiring, not a bounded module:
   `PYTHONPATH` to the generated modules' `src` dirs, defaults
   `TIMESHEET_STORE`/`TIMESHEET_TIMER` to `~/.timesheet/`, and execs the CLI.
 - [`claude/session_start.sh`](./claude/session_start.sh) — SessionStart hook:
-  runs `timesheet start` with the person from `TIMESHEET_PERSON` and the
-  project from `TIMESHEET_PROJECT` or the repo directory name.
+  runs `timesheet start` with the project from `TIMESHEET_PROJECT` or the repo
+  directory name.
 - [`claude/session_end.sh`](./claude/session_end.sh) — SessionEnd hook: runs
   `timesheet stop`, so every session's duration lands in the store.
 
-The hooks are **non-blocking and fail-soft**: no `TIMESHEET_PERSON`, missing
-generated modules, or a timer already started by a concurrent session all exit
-`0` quietly. A broken timesheet must never break a session.
+The hooks are **non-blocking and fail-soft**: missing generated modules or a
+timer already started by a concurrent session all exit `0` quietly. A broken
+timesheet must never break a session.
 
 ### Project-scoped setup (this repo)
 
@@ -129,7 +178,6 @@ hooks, and [`.claude/skills/timesheet/SKILL.md`](../../.claude/skills/timesheet/
 adds a `/timesheet` skill that prints today's and this week's logged hours.
 
 ```bash
-export TIMESHEET_PERSON="Ada Lovelace"   # identity comes from env vars only
 cd examples/timesheet && mint render timesheet-cli
 ```
 
@@ -163,9 +211,8 @@ project dir names become the project column automatically:
 ```
 
 Use an absolute path to wherever this repo is cloned (`$CLAUDE_PROJECT_DIR`
-would point at whatever repo the session runs in, not this one). Set
-`TIMESHEET_PERSON` in your shell profile. Copy the skill to
-`~/.claude/skills/timesheet/` if you want `/timesheet` everywhere.
+would point at whatever repo the session runs in, not this one). Copy the
+skill to `~/.claude/skills/timesheet/` if you want `/timesheet` everywhere.
 
 Notes on the moving parts:
 
@@ -180,6 +227,6 @@ Notes on the moving parts:
 
 ## No real personal data
 
-Specs, tests, and cassettes use obviously fake fixtures only — `Ada Lovelace`,
-projects `Apollo`/`Zephyr`. The hook scripts read identity from env vars only;
-nothing guesses a username from the OS.
+The app is single-user by design: entries carry no name, and no script reads
+or guesses an identity from the OS. Specs, tests, and cassettes use obviously
+fake fixtures only — projects `Apollo`/`Zephyr`.
