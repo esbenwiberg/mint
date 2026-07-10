@@ -17,6 +17,7 @@ from .workflow import (
     new_module,
     next_module,
     parse_module,
+    prune_project,
     report_module,
     render_module,
     status_module,
@@ -169,6 +170,13 @@ def build_parser() -> argparse.ArgumentParser:
     clean_parser.add_argument("--yes", action="store_true", help="confirm deletion")
     clean_parser.set_defaults(handler=handle_clean)
 
+    prune_parser = subparsers.add_parser(
+        "prune",
+        help="delete replay cassettes no rendered module references",
+    )
+    prune_parser.add_argument("--yes", action="store_true", help="confirm deletion")
+    prune_parser.set_defaults(handler=handle_prune)
+
     return parser
 
 
@@ -256,6 +264,12 @@ def handle_inspect(args: argparse.Namespace) -> int:
 
 def handle_clean(args: argparse.Namespace) -> int:
     status, output = clean_module(args.module, yes=args.yes)
+    print(output, end="")
+    return status
+
+
+def handle_prune(args: argparse.Namespace) -> int:
+    status, output = prune_project(yes=args.yes)
     print(output, end="")
     return status
 

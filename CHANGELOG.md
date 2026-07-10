@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Added `mint prune [--yes]`: deletes replay cassettes no rendered module
+  references. Refuses while any module's generated output is stale or missing
+  (the live cassette set is only knowable from an up-to-date render's attempt
+  manifests), lists orphans dry-run by default, and warns when a referenced
+  cassette is missing from `resources/cassettes`.
+- Added `docs/spec-authoring.md`: spec-writing guide covering testable
+  acceptance, blast-radius-aware section placement, the UI style-lock pattern,
+  and the record/replay/prune workflow.
+
 ## 1.0.1 - 2026-07-07
 
 - Fixed replay cassettes recording absolute machine paths into prompts, which made
