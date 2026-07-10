@@ -150,6 +150,8 @@ MINT_LIVE=1 mint live-smoke <module>               # force a full re-record
 
 Default provider is `claude-cli` / `sonnet` (uses your Claude Code auth). New
 cassettes are written under `resources/cassettes/` and should be committed.
+Re-recording orphans the replaced cassettes — run `mint prune --yes` (after
+everything renders NOOP) to delete them, then re-verify a wipe-and-replay.
 
 ## Claude Code integration (hand-written glue)
 

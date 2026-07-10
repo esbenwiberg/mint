@@ -74,10 +74,12 @@ rendererPromptVersion: timesheet-v1
 - id: FR3
   title: Add entries through the form
   spec:
+    - The add form's `date` field is an input with `type="date"`, so browsers offer the native date picker; it posts the `YYYY-MM-DD` value the store expects.
     - `POST /entries` with valid form fields stores a `draft` entry and responds 303 with a `location` header of `/`.
     - Form values whose hours fail `validate_hours` — zero, negative, or lifting the date's stored total beyond the 24-hour cap — respond 422 with an error page and store nothing.
     - An invalid date responds 422 with an error page and stores nothing.
   acceptance:
+    - The `GET /` page contains an input whose attributes include `name="date"` and `type="date"`.
     - `POST /entries` with fields `project=Apollo`, `date=2026-07-06`, `hours=2.5` responds 303 with a `location` header equal to `/`, and a following `GET /` contains an entry row with `2.5`.
     - `POST /entries` with `hours=0` responds 422 and the page contains a `ts-error` element whose text contains `hours`, and a following `GET /` contains no new entry row.
     - With 20.0 hours already stored on `2026-07-06`, posting 4.0 more hours responds 303 — the exact 24-hour day boundary — and posting 4.5 instead responds 422 and stores nothing.
