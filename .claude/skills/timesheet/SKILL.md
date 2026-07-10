@@ -19,7 +19,7 @@ Summarize the entries above for the user:
 - **Today**: total hours and per-project hours for entries dated today.
 - **This week**: total hours and per-project hours across all lines.
 
-Each line is `#id person project date hours status`. Sum the hours yourself and
+Each line is `#id project date hours status`. Sum the hours yourself and
 present a short, readable summary. If there are no entries, say nothing was
 logged this week. If the output is an error about missing generated modules,
 tell the user to run `cd examples/timesheet && mint render timesheet-cli`.

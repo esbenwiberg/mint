@@ -1,6 +1,6 @@
 ---
 module: timesheet-api
-description: FastAPI backend exposing the timesheet store and rules over HTTP
+description: FastAPI backend exposing the personal timesheet store and rules over HTTP
 imports: [timestore, rules]
 requires: [timestore, rules]
 stack: python-lib
@@ -12,7 +12,7 @@ rendererPromptVersion: timesheet-v1
 ## definitions
 
 - App factory: `create_app(store_path)` returning a FastAPI application bound to one store file.
-- Entry body: a JSON object with keys `person`, `project`, `date`, `hours`.
+- Entry body: a JSON object with keys `project`, `date`, `hours`.
 - Week query: an ISO week label `YYYY-Www` passed as the `week` query parameter.
 - Error contract: 422 for an invalid body or rule violation, 404 for an unknown entry or project, 409 for an illegal transition or an edit of an approved entry.
 
@@ -22,10 +22,10 @@ rendererPromptVersion: timesheet-v1
 - Expose `create_app(store_path)` from `src/timesheet_api/`.
 - Declare `fastapi` and `httpx` in the generated `pyproject.toml` `[project]` dependencies.
 - Persist entries only through the required timestore module and enforce every rule only through the required rules module; the app holds no state of its own.
-- POST `/entries` validates the body, checks `validate_hours` against the person's existing day total read from the store, and stores a new `draft` entry.
+- POST `/entries` validates the body, checks `validate_hours` against the total hours already stored for the body's date read from the store, and stores a new `draft` entry.
 - GET `/projects/{project}/entries` returns the project's entries, filtered to the `week` query parameter when one is given; a malformed week label responds 422.
 - POST `/entries/{entry_id}/submit`, `/approve`, and `/reject` move the entry through the rules state machine and persist the new status.
-- PUT `/entries/{entry_id}` replaces `person`, `project`, `date`, and `hours` on an entry after `assert_editable` and `validate_hours` pass; the entry keeps its status.
+- PUT `/entries/{entry_id}` replaces `project`, `date`, and `hours` on an entry after `assert_editable` and `validate_hours` pass; the entry keeps its status.
 - Map errors at request time: an invalid body shape, date, or rule violation responds 422; an unknown entry id or unknown project responds 404; a `RuleError` from a status transition or from editing an approved entry responds 409. Every error response carries a JSON `detail` field.
 - A project is unknown when the store holds no entries for it at all; a known project with no entries in the requested week responds 200 with an empty list.
 - Unit tests use pytest.
@@ -42,12 +42,12 @@ rendererPromptVersion: timesheet-v1
   title: Create entries with validation
   spec:
     - POST `/entries` with a valid body stores a `draft` entry and responds 201 with the stored entry including its integer `id`.
-    - A body whose hours fail `validate_hours` — zero, negative, or lifting the person's day total beyond the 24-hour cap — responds 422.
+    - A body whose hours fail `validate_hours` — zero, negative, or lifting the date's stored total beyond the 24-hour cap — responds 422.
     - A body missing keys or carrying an invalid `date` responds 422 and stores nothing.
   acceptance:
-    - POST `/entries` with `{"person": "Ada Lovelace", "project": "Apollo", "date": "2026-07-06", "hours": 6.0}` responds 201 and the body contains `"status": "draft"` and an integer `id`.
+    - POST `/entries` with `{"project": "Apollo", "date": "2026-07-06", "hours": 6.0}` responds 201 and the body contains `"status": "draft"` and an integer `id`.
     - POST `/entries` with `hours` 0 responds 422.
-    - With 20.0 hours already stored for `Ada Lovelace` on `2026-07-06`, posting 4.0 more hours responds 201 — the exact 24-hour day boundary — and posting 4.5 instead responds 422.
+    - With 20.0 hours already stored on `2026-07-06`, posting 4.0 more hours responds 201 — the exact 24-hour day boundary — and posting 4.5 instead responds 422.
     - POST `/entries` with `date` `2026-13-40` responds 422.
 
 - id: FR2
@@ -77,7 +77,7 @@ rendererPromptVersion: timesheet-v1
 - id: FR4
   title: Edit entries until approval
   spec:
-    - PUT `/entries/{entry_id}` replaces `person`, `project`, `date`, and `hours` and responds 200 with the updated entry; the status is kept.
+    - PUT `/entries/{entry_id}` replaces `project`, `date`, and `hours` and responds 200 with the updated entry; the status is kept.
     - Editing an `approved` entry responds 409.
     - The replacement body passes the same 422 validation as creation; an unknown entry id responds 404.
   acceptance:
