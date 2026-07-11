@@ -827,3 +827,58 @@ def test_explicit_cassette_dir_preferred_over_env(tmp_path, monkeypatch):
     # Recorded under the explicit dir, not the env dir.
     assert (explicit / "v1" / f"{outcome.cassette_id}.json").exists()
     assert not (tmp_path / "env_dir").exists()
+
+
+def test_build_prompt_embeds_unit_resources():
+    from mint_cli.renderer.model import build_prompt
+
+    request = make_request(
+        unit_resources=[{"path": "resources/tokens.css", "contents": ":root { --x: 1; }"}]
+    )
+
+    prompt = build_prompt(request, "pv1")
+
+    assert "## Unit resources (verbatim project files)" in prompt
+    assert "#### resources/tokens.css" in prompt
+    assert ":root { --x: 1; }" in prompt
+    # No resources -> no section, so existing prompts (and cassette ids) are unchanged.
+    assert "Unit resources" not in build_prompt(make_request(), "pv1")
+
+
+def test_cli_model_client_runs_in_scratch_cwd(tmp_path, monkeypatch):
+    # An agentic CLI that writes files despite being asked to only print a patch
+    # (the observed `claude --print` stray-patch bug) must never land those
+    # writes in the project directory.
+    project_cwd = tmp_path / "project"
+    project_cwd.mkdir()
+    monkeypatch.chdir(project_cwd)
+    script = tmp_path / "stray_model.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "sys.stdin.read()\n"
+        "open('stray.txt', 'w').write('oops')\n"  # lands in the cwd the client picks
+        "print(json.dumps({'summary': 'ok', 'files': []}))\n",
+        encoding="utf-8",
+    )
+    client = CliModelClient(
+        name="Fake CLI",
+        command=[sys.executable, str(script)],
+        timeout_seconds=30,
+    )
+
+    response = client.complete(system="s", prompt="p", request=make_request())
+
+    assert json.loads(response)["summary"] == "ok"
+    assert not (project_cwd / "stray.txt").exists()
+    assert list(project_cwd.iterdir()) == []
+
+
+def test_claude_cli_default_command_disables_tools():
+    from mint_cli.renderer.model import ClaudeCliModelClient
+
+    client = ClaudeCliModelClient("sonnet")
+
+    command = client.command
+    assert command[0] == "claude" and "--print" in command
+    tools_flag = command.index("--tools")
+    assert command[tools_flag + 1] == ""

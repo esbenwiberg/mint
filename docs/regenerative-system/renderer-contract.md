@@ -28,6 +28,8 @@ Everything known about the unit at render time:
   `stacks.py`, including TypeScript package-script expectations and code fences for
   required-module context. When the spec declares `styleLock`, the workflow appends
   the style-lock constraint to the hints so every prompt carries it.
+- `unit_resources` — verbatim contents of the current unit's `resources:` files
+  (`[{path, contents}]`); embedded in the prompt as authoritative inputs.
 
 ### `RenderOutcome`
 
@@ -96,10 +98,16 @@ class ModelClient(Protocol):
 - `RecordingClient` — wraps a live provider when `MINT_LIVE=1` and writes cassettes.
 - `AnthropicModelClient` — real provider, imported lazily; errors clearly without
   `ANTHROPIC_API_KEY`. It is only reached through the explicit live-record path.
-- `ClaudeCliModelClient` — shells out to `claude --print` and reads the model
-  response from stdout. Override with `MINT_CLAUDE_CLI_COMMAND`.
+- `ClaudeCliModelClient` — shells out to `claude --print` with `--tools ""` (patch
+  generation needs pure text output; an agent with file tools was the source of the
+  stray-patch bug). Override with `MINT_CLAUDE_CLI_COMMAND`.
 - `CodexCliModelClient` — shells out to `codex exec` in read-only/no-approval mode
   and reads the model response from stdout. Override with `MINT_CODEX_CLI_COMMAND`.
+
+Every CLI client runs its command in an **empty scratch cwd**, never the project
+directory: an agentic CLI that executes file tools despite being asked to print a
+patch can only write into a throwaway directory, and no repo-level CLI config or
+context leaks into the render.
 
 See [record-replay.md](record-replay.md) for cassette layout and the re-record flow.
 

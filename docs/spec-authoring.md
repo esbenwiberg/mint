@@ -184,9 +184,11 @@ mint prune                                        # list orphaned cassettes; --y
   is stale (the live cassette set is only knowable from an up-to-date render),
   lists orphans dry-run by default, and deletes with `--yes`. Re-verify a
   wipe-and-replay after pruning.
-- **Check `git status` before committing.** The renderer occasionally writes
-  stray copies of module files outside the patch roots. Diff anything
-  unexpected against the canonical generated output and delete it.
+- **Check `git status` before committing.** CLI renderers used to write stray
+  copies of module files outside the patch roots; the root cause is fixed (CLI
+  clients now run tool-less in a scratch cwd), but the habit stays cheap
+  insurance. Diff anything unexpected against the canonical generated output
+  before deleting it.
 
 ## Miscellany that bites
 
@@ -198,3 +200,8 @@ mint prune                                        # list orphaned cassettes; --y
   may spawn one.
 - Fixtures in specs and tests are public forever (cassettes embed them).
   Use obviously fake data only.
+- Unit `resources:` files are embedded verbatim in that unit's render prompt
+  and content-hashed into its `textHash` — editing one re-renders the unit and
+  re-records its cassettes. Good for design assets and fixture data the spec
+  references by content; UTF-8 text only, 24k chars per file. The same
+  public-forever rule applies: cassettes embed them.

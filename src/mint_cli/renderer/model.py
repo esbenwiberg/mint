@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from typing import Any, Callable, Protocol
 
 from ..errors import MintError
@@ -294,6 +295,21 @@ def build_prompt(request: RenderRequest, prompt_version: str) -> str:
         *[f"- {s}" for s in unit.get("spec", [])],
         "Acceptance:",
         *[f"- {a}" for a in unit.get("acceptance", [])],
+    ]
+    if request.unit_resources:
+        lines += [
+            "",
+            "## Unit resources (verbatim project files)",
+            "Treat these as authoritative inputs where the unit spec references them.",
+        ]
+        for f in request.unit_resources:
+            lines.append(f"#### {_require(f, 'path', 'unit resource')}")
+            contents = str(f.get("contents", ""))
+            fence = _code_fence(contents)
+            lines.append(fence)
+            lines.append(contents)
+            lines.append(fence)
+    lines += [
         "",
         f"Phase: {request.phase} (attempt {request.attempt})",
     ]
@@ -433,15 +449,23 @@ class CliModelClient:
             )
         input_text = _cli_input(system=system, prompt=prompt)
         try:
-            result = subprocess.run(
-                self.command,
-                input=input_text,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-                timeout=self.timeout_seconds,
-            )
+            # Agentic CLIs can execute file tools even when asked to only print a
+            # JSON patch — `claude --print` was observed (three separate times)
+            # writing stale module copies into the project root, outside the patch
+            # roots. Running in an empty scratch cwd guarantees any stray write
+            # lands in a throwaway directory, never in the user's repo, and keeps
+            # the render hermetic (no repo-level CLI config or context leaks in).
+            with tempfile.TemporaryDirectory(prefix="mint-model-cli-") as scratch:
+                result = subprocess.run(
+                    self.command,
+                    input=input_text,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=self.timeout_seconds,
+                    cwd=scratch,
+                )
         except subprocess.TimeoutExpired as exc:
             raise MintError(
                 f"{self.name} command timed out after {self.timeout_seconds}s "
@@ -471,7 +495,19 @@ class ClaudeCliModelClient(CliModelClient):
     def __init__(self, model: str) -> None:
         command = _command_from_env("MINT_CLAUDE_CLI_COMMAND")
         if command is None:
-            command = ["claude", "--print", "--output-format", "text", "--model", model]
+            # --tools "" disables every built-in tool: patch generation needs pure
+            # text output, and an agent with file tools is the stray-patch bug
+            # waiting to happen (see CliModelClient.complete's scratch cwd).
+            command = [
+                "claude",
+                "--print",
+                "--output-format",
+                "text",
+                "--tools",
+                "",
+                "--model",
+                model,
+            ]
         super().__init__(name="Claude CLI", command=command)
 
     def _env_hint(self) -> str:

@@ -1777,3 +1777,92 @@ def test_interface_change_lines_report_names_and_dependents(rendered_demo_projec
     assert "tasklist" in text
 
     assert workflow.interface_change_lines(context, before, before) == []
+
+
+# --------------------------------------------------------------------------- #
+# unit resources: embedded verbatim, content-hashed
+# --------------------------------------------------------------------------- #
+
+CALC_RESOURCE_SPEC = """---
+module: calc
+description: tiny adder with a linked resource
+imports: []
+requires: []
+stack: python-lib
+---
+
+## definitions
+- Add: adds two integers.
+## implementation
+- Provide add(a, b) in the calc package.
+## test
+- pytest unit and conformance tests.
+## functional
+- id: FR1
+  title: add returns the sum
+  spec:
+    - add(a, b) returns a + b.
+  acceptance:
+    - add(2, 3) == 5 and add(10, 5) == 15.
+  resources:
+    - resources/notes.txt
+"""
+
+
+def test_unit_resources_are_embedded_and_content_hashed(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-model")
+    project.write_spec("calc", CALC_RESOURCE_SPEC)
+    resource = project.root / "resources" / "notes.txt"
+    resource.parent.mkdir(parents=True, exist_ok=True)
+    resource.write_text("the answer rides on 42\n", encoding="utf-8")
+    monkeypatch.chdir(project.root)
+
+    seen_prompts: list[str] = []
+
+    def respond(request):
+        seen_prompts.append(build_prompt_for_test(request))
+        return calc_patch("a + b")
+
+    client = ScriptedModelClient(respond)
+    status, output = workflow.render_module("calc", model_client=client)
+    assert status == 0, output
+    assert any("the answer rides on 42" in prompt for prompt in seen_prompts)
+
+    # Same content -> NOOP.
+    status, output = workflow.render_module("calc", model_client=client)
+    assert "NOOP" in output
+
+    # Editing the resource invalidates exactly like editing a spec bullet.
+    resource.write_text("the answer rides on 43\n", encoding="utf-8")
+    context = workflow.load_context("calc", project.root)
+    metadata = workflow.load_metadata(context.generated_dir)
+    hashes = workflow.compute_context_hashes(context)
+    plan = workflow.determine_render_plan(context, metadata, None, None, False, hashes)
+    assert not plan.noop
+    assert "functional unit changed: FR1" in plan.reason
+
+
+def build_prompt_for_test(request):
+    from mint_cli.renderer.model import build_prompt
+
+    return build_prompt(request, "test")
+
+
+def test_healthcheck_rejects_binary_and_oversized_resources(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-model")
+    project.write_spec("calc", CALC_RESOURCE_SPEC)
+    resource = project.root / "resources" / "notes.txt"
+    resource.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(project.root)
+
+    resource.write_bytes(b"\xff\xfe\x00binary")
+    status, output = workflow.healthcheck_module("calc", allow_missing_replay=True)
+    assert status == 1 and "not UTF-8 text" in output
+
+    resource.write_text("x" * (workflow.MAX_RESOURCE_CHARS + 1), encoding="utf-8")
+    status, output = workflow.healthcheck_module("calc", allow_missing_replay=True)
+    assert status == 1 and "too large to embed" in output
+
+    resource.write_text("fine\n", encoding="utf-8")
+    status, output = workflow.healthcheck_module("calc", allow_missing_replay=True)
+    assert status == 0, output

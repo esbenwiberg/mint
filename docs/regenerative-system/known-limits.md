@@ -21,11 +21,11 @@ What this system deliberately does *not* do yet, and where it would bite first.
 - **Hash-based change detection only.** Re-render is driven by content hashes, not by
   understanding *what* changed. A whitespace-only spec edit re-renders; a semantically
   irrelevant dependency change still cascades.
-- **Unit `resources:` are path-validated but not embedded or content-hashed.**
-  `build_prompt` never includes their contents, so they cannot carry design assets
-  into a render, and editing a resource file does not invalidate cassettes. Fixing
-  this is the path to verbatim asset modules (e.g. a `tokens.css` copied byte-exact
-  with no model in the loop) — the logical endgame of the style-lock work.
+- **Resource files are embedded through the model, not copied by mint.** Unit
+  `resources:` are now embedded verbatim in the render prompt and content-hashed
+  into the unit's `textHash`, but the renderer still transcribes them into
+  generated files — pin byte-exactness in acceptance when it matters. A true
+  asset stack (mint copies the file, no model in the loop) does not exist yet.
 - **Style lock is source-scan enforcement, not runtime enforcement.** The scan
   catches literal `<style`, `style=`, and off-prefix class tokens in generated
   `src/`; markup assembled dynamically enough to hide those substrings would slip

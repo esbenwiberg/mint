@@ -40,6 +40,9 @@ class RenderRequest:
     # so later units (and retries) see the code prior units actually produced
     # instead of re-guessing names from unit titles.
     module_files_so_far: list[dict[str, Any]] = field(default_factory=list)
+    # Verbatim contents of the current unit's `resources:` files ([{path, contents}]).
+    # Their content hashes ride the unit text hash, so editing one re-renders the unit.
+    unit_resources: list[dict[str, str]] = field(default_factory=list)
     attempt: int = 1
     feedback: str | None = None
     prompt_hints: list[str] = field(default_factory=list)
