@@ -19,6 +19,7 @@ Each generated module owns a `.mintgen/` directory inside its nested git repo:
       unit-1.stdout.log      # test stdout
       unit-1.stderr.log      # test stderr
       conformance-1.json …
+      style-lock-1.json …    # only when the spec declares styleLock and a scan failed
       test-quality-1.json …  # coverage/traceability/mutation verdict
   src/ tests/ …              # the generated code
 ```
@@ -105,7 +106,9 @@ phase allows one retry (`limits.unitRetries`); the conformance phase allows one 
 (`limits.conformanceRetries`) that re-renders with the failing output as feedback and
 re-checks the unit tests for regression. `classification` is one of `rendered`,
 `passed`, `patch_invalid`, `<phase>_failed`, or `no_tests` — a zero-test gate is
-treated as a failure, never a pass. The test-quality phase writes
+treated as a failure, never a pass. A failed style-lock scan writes
+`style-lock-<n>.json` with classification `style_lock_failed` and consumes a
+retry of the phase it interrupted. The test-quality phase writes
 `test-quality-1.json` with classification `passed` or `test_quality_failed`.
 Budget aborts write `.mintgen/reports/budget-abort.json` with the limit, usage, and
 unit/phase where the abort happened.

@@ -26,7 +26,8 @@ Everything known about the unit at render time:
   retry, `feedback` carries the failing test output.
 - `prompt_hints`, `code_fence_language` — target-stack guidance supplied by
   `stacks.py`, including TypeScript package-script expectations and code fences for
-  required-module context.
+  required-module context. When the spec declares `styleLock`, the workflow appends
+  the style-lock constraint to the hints so every prompt carries it.
 
 ### `RenderOutcome`
 

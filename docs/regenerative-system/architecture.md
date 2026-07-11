@@ -41,6 +41,12 @@ All code lives under `src/mint_cli/`.
      or oversized model output is recorded as `patch_invalid` and fed back to the
      model while retries remain.
    - Apply the patch to the generated module dir and the conformance dir.
+   - If the spec declares `styleLock`, run the **style-lock gate**: scan the
+     generated `src/` for `<style` elements, `style=` attributes, and class
+     tokens outside the declared prefix; on failure, re-render with the
+     offending lines as feedback (recorded as `style_lock_failed`). Runs before
+     the test gates so violations never cost a test run, and again after a
+     conformance-phase re-render.
    - Run the stack adapter's **unit gate**; on failure, re-render once with the test
      output as feedback (one retry). Python uses pytest. TypeScript runs
      `npm run typecheck` (`tsc --noEmit`) and Vitest unit tests.
