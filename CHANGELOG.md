@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fixed the CLI stray-patch bug: model CLI commands now run in an empty scratch
+  directory instead of the project root, so an agentic CLI that executes file
+  tools despite being asked to print a patch can never write into the repo; the
+  default `claude` command additionally passes `--tools ""` to disable its
+  built-in tools outright.
+- Unit `resources:` files are now embedded verbatim in the unit's render prompt
+  and content-hashed into the unit's `textHash`: editing a linked file
+  re-renders the unit and invalidates its cassettes, exactly like editing a
+  spec bullet. Healthcheck validates resources are UTF-8 text within the 24k
+  embed cap.
 - Added `styleLock` spec frontmatter: mint mechanically enforces the UI style
   lock on consumer modules — every render attempt scans generated `src/` for
   `<style` elements, `style=` attributes, and class tokens outside the declared

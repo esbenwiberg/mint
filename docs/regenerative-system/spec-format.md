@@ -157,8 +157,15 @@ Rules enforced by `specs.py` (each raises a `MintError` naming the file):
 - `id` matches `FR<number>` (`FR1`, `FR2`, …).
 - ids are **unique** and in **strictly ascending** numeric order.
 - `title`, `spec`, and `acceptance` are present and non-empty.
-- listed `resources` must exist (checked at healthcheck).
+- listed `resources` must exist, be UTF-8 text, and fit the embed cap (24k chars
+  each) — checked at healthcheck and again at render time.
 - a module may not `import` or `require` itself.
+
+Unit `resources` are embedded **verbatim** in that unit's render prompt (an
+"authoritative inputs" section), and their content hashes ride the unit's
+`textHash` — editing a linked file re-renders the unit exactly like editing a
+spec bullet, and invalidates its cassettes. Use them for design assets, fixture
+data, or any file the spec references by content.
 
 ## Hashes computed from a spec
 
@@ -166,7 +173,7 @@ Rules enforced by `specs.py` (each raises a `MintError` naming the file):
 | --- | --- | --- |
 | `specHash` | whole IR | informational / drift detection |
 | `nonFunctionalSpecHash` | IR minus functional units | full re-render trigger |
-| per-unit `textHash` | one unit's id/title/spec/acceptance/resources | per-unit re-render trigger |
+| per-unit `textHash` | one unit's id/title/spec/acceptance/resources (paths **and** file contents) | per-unit re-render trigger |
 | `importedContextHash` | imported modules' shared context | full re-render trigger |
 | `requiredModuleCodeHash` | required modules' public interface (the prompt context payload) | full re-render trigger |
 

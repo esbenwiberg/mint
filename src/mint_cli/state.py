@@ -165,16 +165,36 @@ def refresh_metadata_hashes(
     metadata["generatedCodeHash"] = hash_generated_files(module_dir)
 
 
-def unit_text_hash(unit: FunctionalUnit) -> str:
-    return hash_json(
-        {
-            "id": unit.id,
-            "title": unit.title,
-            "spec": unit.spec,
-            "acceptance": unit.acceptance,
-            "resources": unit.resources,
+def unit_text_hash(unit: FunctionalUnit, root: Path | None = None) -> str:
+    payload: dict[str, Any] = {
+        "id": unit.id,
+        "title": unit.title,
+        "spec": unit.spec,
+        "acceptance": unit.acceptance,
+        "resources": unit.resources,
+    }
+    # Resource *contents* ride the unit hash so editing a linked file re-renders
+    # the unit exactly like editing a spec bullet would. The key is only added
+    # for resource-bearing units, so every existing unit hash stays stable.
+    if unit.resources:
+        if root is None:
+            raise MintError(
+                f"Unit {unit.id} links resources; computing its text hash requires "
+                "the project root."
+            )
+        payload["resourceContentHashes"] = {
+            rel: _resource_content_hash(root / rel) for rel in unit.resources
         }
-    )
+    return hash_json(payload)
+
+
+def _resource_content_hash(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        # Missing/unreadable resources are healthcheck failures; a sentinel keeps
+        # planning deterministic so the render fails with the proper message.
+        return "missing"
 
 
 def record_by_unit(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:

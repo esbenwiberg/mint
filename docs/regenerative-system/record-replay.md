@@ -102,13 +102,14 @@ or `codex` and use the auth already configured by those tools.
 The default CLI commands are:
 
 ```bash
-claude --print --output-format text --model <model>
+claude --print --output-format text --tools "" --model <model>
 codex exec --model <model> --sandbox read-only --ask-for-approval never --color never -
 ```
 
 Override them with `MINT_CLAUDE_CLI_COMMAND` or `MINT_CODEX_CLI_COMMAND`. The
 override command must read the render prompt from stdin and write the raw model
-response to stdout.
+response to stdout. Every CLI command runs in an empty scratch directory, not
+the project — stray file writes from an agentic CLI can never land in the repo.
 
 ## Attempt manifests
 

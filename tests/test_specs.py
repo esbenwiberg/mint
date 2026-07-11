@@ -219,3 +219,30 @@ def test_style_lock_rejects_unknown_keys(tmp_path):
     )
     with pytest.raises(MintError, match="Unknown styleLock key"):
         parse_spec_file(write(tmp_path, text))
+
+
+def test_unit_text_hash_requires_root_for_resource_units(tmp_path):
+    from mint_cli.errors import MintError as StateMintError
+    from mint_cli.state import unit_text_hash
+
+    text = GOOD.replace(
+        "  acceptance:\n    - The thing happened.",
+        "  acceptance:\n    - The thing happened.\n  resources:\n    - resources/notes.txt",
+        1,
+    )
+    spec = parse_spec_file(write(tmp_path, text))
+    unit = spec.functional_units[0]
+    assert unit.resources == ["resources/notes.txt"]
+
+    with pytest.raises(StateMintError, match="requires the project root"):
+        unit_text_hash(unit)
+
+    resource = tmp_path / "resources" / "notes.txt"
+    resource.parent.mkdir(parents=True)
+    resource.write_text("v1", encoding="utf-8")
+    first = unit_text_hash(unit, tmp_path)
+    resource.write_text("v2", encoding="utf-8")
+    assert unit_text_hash(unit, tmp_path) != first
+    # Resource-less units hash identically with or without a root (back-compat).
+    other = spec.functional_units[1]
+    assert unit_text_hash(other) == unit_text_hash(other, tmp_path)

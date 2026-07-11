@@ -1047,6 +1047,21 @@ def healthcheck_module(
             resource_path = context.root / resource
             if not resource_path.exists():
                 failures.append(f"Linked resource missing for {unit.id}: {resource}")
+                continue
+            try:
+                text = resource_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                failures.append(
+                    f"Linked resource for {unit.id} is not UTF-8 text: {resource} — "
+                    "resources are embedded verbatim in render prompts, so only "
+                    "text files are supported."
+                )
+                continue
+            if len(text) > MAX_RESOURCE_CHARS:
+                failures.append(
+                    f"Linked resource for {unit.id} is too large to embed: {resource} "
+                    f"({len(text)} chars, cap {MAX_RESOURCE_CHARS})."
+                )
 
     if context.generated_dir.exists():
         try:
@@ -2119,7 +2134,7 @@ def determine_render_plan(
         record = records.get(unit.id)
         if record is None:
             return RenderPlan(index, end_index, f"new functional unit {unit.id}")
-        if record.get("textHash") != unit_text_hash(unit):
+        if record.get("textHash") != unit_text_hash(unit, context.root):
             return RenderPlan(index, end_index, f"functional unit changed: {unit.id}")
         if record.get("status") != "passed":
             return RenderPlan(index, end_index, f"incomplete functional unit: {unit.id}")
@@ -2277,6 +2292,7 @@ def render_one_unit(
     prompt_hints = adapter.prompt_hints(context, hashes.required_order)
     if context.spec.style_lock is not None:
         prompt_hints = prompt_hints + style_lock_prompt_hints(context.spec.style_lock)
+    unit_resources = _unit_resources_payload(context, unit)
 
     def make_request(phase: str, attempt: int, feedback: str | None) -> RenderRequest:
         return RenderRequest(
@@ -2297,6 +2313,7 @@ def render_one_unit(
             prompt_hints=prompt_hints,
             code_fence_language=adapter.code_fence_language,
             module_files_so_far=_module_files_payload(context),
+            unit_resources=unit_resources,
         )
 
     # ----- implementation + unit-test phase (one retry on failure) -----
@@ -2575,7 +2592,7 @@ def render_one_unit(
         record = {
             "id": unit.id,
             "title": unit.title,
-            "textHash": unit_text_hash(unit),
+            "textHash": unit_text_hash(unit, context.root),
             "status": "test_quality_failed",
             "startedAt": started_at,
             "finishedAt": now_iso(),
@@ -2607,7 +2624,7 @@ def render_one_unit(
     record = {
         "id": unit.id,
         "title": unit.title,
-        "textHash": unit_text_hash(unit),
+        "textHash": unit_text_hash(unit, context.root),
         "status": "passed",
         "startedAt": started_at,
         "finishedAt": now_iso(),
@@ -3010,6 +3027,36 @@ def _required_modules_payload(
     context: ModuleContext, required_order: tuple[str, ...]
 ) -> list[dict[str, Any]]:
     return [_required_context_entry(context, module) for module in required_order]
+
+
+# Resource files are embedded verbatim in the unit's render prompt; the cap keeps
+# one oversized asset from blowing the prompt (and the cassette) out of shape.
+MAX_RESOURCE_CHARS = 24000
+
+
+def _unit_resources_payload(context: ModuleContext, unit: FunctionalUnit) -> list[dict[str, str]]:
+    payload: list[dict[str, str]] = []
+    for rel in unit.resources:
+        path = context.root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise MintError(
+                f"Linked resource missing for {unit.id}: {rel}. Fix: restore the file "
+                f"or remove it from the unit's resources (see mint healthcheck {context.module})."
+            ) from exc
+        except (UnicodeDecodeError, OSError) as exc:
+            raise MintError(
+                f"Linked resource for {unit.id} is not UTF-8 text: {rel} — resources "
+                "are embedded verbatim in render prompts, so only text files are supported."
+            ) from exc
+        if len(text) > MAX_RESOURCE_CHARS:
+            raise MintError(
+                f"Linked resource for {unit.id} is too large to embed: {rel} "
+                f"({len(text)} chars, cap {MAX_RESOURCE_CHARS})."
+            )
+        payload.append({"path": rel, "contents": text})
+    return payload
 
 
 def _module_files_payload(context: ModuleContext) -> list[dict[str, Any]]:
