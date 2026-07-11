@@ -176,6 +176,23 @@ mint status tasklist
 # Suggested render (functional unit changed: FR2): mint render tasklist --from FR2
 ```
 
+## `mint drift <module>`
+
+Show hand edits in the module's generated tree since its last checkpoint. Every
+successful unit render ends in a checkpoint commit in the module's nested git
+repo, so any uncommitted change outside `.mintgen/` is a hand edit (or a
+renderer stray). Prints the changed files and the diff of tracked changes.
+Exits 0 when clean and 1 when drift exists — like `git diff --exit-code` — so
+it can guard a re-record:
+
+```bash
+mint drift timesheet-web && MINT_LIVE=1 mint render timesheet-web
+```
+
+Hand edits do not survive a re-render. Use the drift output as the backport
+checklist: move every decision that must stay into spec bullets, then
+re-record. See the iteration-loop section of `docs/spec-authoring.md`.
+
 ## `mint render <module> [--from FRN] [--range FRN:FRM] [--force]`
 
 Render the module and everything it requires, required-first. With no flags it does
@@ -190,6 +207,12 @@ mint render taskstore --force        # full re-render regardless of hashes
 
 `--from` and `--range` are mutually exclusive and apply only to the named module;
 required modules always use their incremental plan.
+
+A completed render also reports interface economics: when the module's public
+interface changed since the last checkpoint it prints the added/removed names
+and the dependent modules that will re-render in full, and it warns when a
+public constant carries a large literal (which rides the dependent cascade —
+see the style-lock section of `docs/spec-authoring.md`).
 
 If the generated directory already exists but has no `.mintgen/module.json` (for
 example, copied output from another checkout), normal render refuses to touch it.

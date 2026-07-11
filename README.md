@@ -178,6 +178,8 @@ conformance/                  Ignored generated conformance tests
 - `mint next [<module>]` shows the next recommended command.
 - `mint render <module>` renders a module and required dependencies.
 - `mint status <module>` explains whether a render would be a no-op or a slice.
+- `mint drift <module>` shows hand edits in generated output since the last
+  checkpoint.
 - `mint inspect <module> <FRN>` shows a unit record and attempt history.
 - `mint report <module>` prints the latest run report.
 - `mint clean <module> --yes` removes generated output for a module.
