@@ -4,6 +4,9 @@ description: Server-rendered HTML front end for the personal timesheet, skinned 
 imports: [timestore, rules, ui-kit]
 requires: [timestore, rules, ui-kit]
 stack: python-lib
+styleLock:
+  kit: ui-kit
+  classPrefix: ts-
 rendererProvider: claude-cli
 rendererModel: sonnet
 rendererPromptVersion: timesheet-v1
@@ -40,7 +43,7 @@ rendererPromptVersion: timesheet-v1
 
 - Conformance tests use pytest and drive the app in-process with `fastapi.testclient.TestClient`; never start a server subprocess.
 - Conformance tests point each app at a `tmp_path` store file via `create_web_app(store_path)` and disable redirect following when asserting 303 responses.
-- Conformance tests assert markup with string containment and `re` over the response text, and import `TOKENS_CSS` from the required ui-kit module for the style-lock checks.
+- Conformance tests assert markup with string containment and `re` over the response text, and call `tokens_css()` from the required ui-kit module for the style-lock checks.
 - Include every status code in the contract: 200, 303, 404, 409, and 422.
 
 ## functional
@@ -56,7 +59,7 @@ rendererPromptVersion: timesheet-v1
     - With entries of 2.5 and 6.0 hours stored on `Apollo`, `GET /` responds 200, contains two `data-testid="entry-row"` occurrences, a `ts-badge--draft` span, and a `ts-total` element whose text contains `8.5`.
     - On an empty store, `GET /` responds 200, contains a `ts-empty` element and `data-testid="add-form"`, and contains no `data-testid="entry-row"` and no `ts-total`.
     - After adding an entry whose project is `<b>Ops</b>`, the page contains `&lt;b&gt;Ops&lt;/b&gt;` and does not contain `<b>Ops</b>`.
-    - The `GET /` page contains `TOKENS_CSS` exactly once, contains no `style="` substring, contains exactly one `<h1`, and every `class="..."` attribute value consists only of names starting with `ts-`.
+    - The `GET /` page contains the ui-kit `tokens_css()` string exactly once, contains no `style="` substring, contains exactly one `<h1`, and every `class="..."` attribute value consists only of names starting with `ts-`.
 
 - id: FR2
   title: Filter the page by week and project

@@ -9,6 +9,7 @@ from .errors import MintError
 from .workflow import (
     clean_module,
     doctor_project,
+    drift_module,
     healthcheck_module,
     init_project,
     inspect_unit,
@@ -147,6 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("module", help="module name, for example: example")
     status_parser.set_defaults(handler=handle_status)
 
+    drift_parser = subparsers.add_parser(
+        "drift",
+        help="show hand edits in generated output since the last checkpoint",
+    )
+    drift_parser.add_argument("module", help="module name, for example: example")
+    drift_parser.set_defaults(handler=handle_drift)
+
     report_parser = subparsers.add_parser(
         "report",
         help="print the latest run report",
@@ -231,6 +239,12 @@ def handle_healthcheck(args: argparse.Namespace) -> int:
 def handle_status(args: argparse.Namespace) -> int:
     print(status_module(args.module), end="")
     return 0
+
+
+def handle_drift(args: argparse.Namespace) -> int:
+    status, output = drift_module(args.module)
+    print(output, end="")
+    return status
 
 
 def handle_report(args: argparse.Namespace) -> int:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -26,6 +27,7 @@ from .gitutil import (
     git_available,
     git_head,
     reset_hard,
+    run_git,
 )
 from .hashing import hash_json
 from .modgraph import build_render_order
@@ -42,7 +44,7 @@ from .renderer import (
 from .renderer.base import Renderer
 from .renderer.model import ModelClient, ModelOutputError
 from .renderer.templates import known_templates
-from .specs import FunctionalUnit, Spec, parse_spec_file
+from .specs import FunctionalUnit, Spec, StyleLock, parse_spec_file
 from .state import (
     append_render_log,
     fresh_metadata,
@@ -56,7 +58,7 @@ from .state import (
     write_attempt,
     write_metadata,
 )
-from .stacks import StackAdapter, adapter_for_stack, known_stacks
+from .stacks import PY_DEPS_DIRNAME, StackAdapter, adapter_for_stack, known_stacks
 from .test_quality import evaluate_test_quality, format_test_quality_verdict
 
 INIT_SKELETON = """mint Phase 0 skeleton
@@ -1756,6 +1758,11 @@ def _render_single_module_locked(
             write_run_report(context, build_run_report(context, metadata))
         return 0, f"NOOP {module}\n- Generated output already matches spec and inputs.\n"
 
+    # Captured before the workspace reset: the public interface of the last
+    # successful render, so a completed render can report exactly what changed
+    # for dependents. None on a fresh render (nothing to compare against).
+    interface_before = _module_interface_files(context) if metadata is not None else None
+
     # Only shell out to the prepare script once we know we will actually render;
     # a NOOP must not run per-module prepare for every module in the chain.
     prepare = adapter.prepare(context)
@@ -1822,6 +1829,11 @@ def _render_single_module_locked(
             return 1, "\n".join(output) + "\n\n" + str(exc) + "\n"
         output.append(f"- Completed {unit.id}: {unit.title}")
 
+    interface_after = _module_interface_files(context)
+    if interface_before is not None:
+        output.extend(interface_change_lines(context, interface_before, interface_after))
+    output.extend(public_literal_warnings(interface_after))
+
     latest_metadata = load_metadata(context.generated_dir) or metadata
     write_run_report(context, build_run_report(context, latest_metadata))
     return 0, "\n".join(output) + "\n"
@@ -1839,6 +1851,84 @@ def clean_module(module: str, yes: bool = False) -> tuple[int, str]:
     if not removed:
         return 0, f"CLEAN {module}\n- Nothing to remove.\n"
     return 0, f"CLEAN {module}\n" + "".join(f"- Removed {path}\n" for path in removed)
+
+
+# Mint writes run reports (and other bookkeeping) into .mintgen/ after the final
+# checkpoint commit, so that directory is expected to be dirty on a healthy render.
+# Runtime caches appear whenever tests or the app run against the generated tree —
+# mint scrubs them before every checkpoint (_remove_python_caches), so drift must
+# not read them as hand edits either.
+_DRIFT_PATHSPEC = ":(exclude).mintgen"
+
+_DRIFT_IGNORED_DIRS = {
+    ".mintgen",
+    "__pycache__",
+    ".pytest_cache",
+    "node_modules",
+    "coverage",
+    PY_DEPS_DIRNAME,
+}
+
+
+def _drift_ignored(path: str) -> bool:
+    if path.endswith(".pyc"):
+        return True
+    return bool(_DRIFT_IGNORED_DIRS.intersection(path.strip("/").split("/")))
+
+
+_DRIFT_STATUS_LABELS = {
+    "??": "untracked",
+    "M": "modified",
+    "A": "added",
+    "D": "deleted",
+    "R": "renamed",
+    "C": "copied",
+}
+
+
+def drift_module(module: str, *, root: Path | None = None) -> tuple[int, str]:
+    """Show hand edits in a module's generated tree since its last checkpoint.
+
+    Every successful unit render ends in a checkpoint commit in the module's
+    nested git repo, so any uncommitted change outside ``.mintgen/`` is a hand
+    edit (or a renderer stray). Exits 0 when clean and 1 when drift exists —
+    like ``git diff --exit-code`` — so it can guard a re-record:
+    ``mint drift m && MINT_LIVE=1 mint render m``.
+    """
+    context = load_context(module, root)
+    if not (context.generated_dir / ".git").exists():
+        return (
+            1,
+            f"FAIL drift {module}\n"
+            f"- No generated output at {context.generated_dir.relative_to(context.root).as_posix()}\n"
+            f"- Next: mint render {module}\n",
+        )
+
+    checkpoint = run_git(context.generated_dir, "log", "-1", "--format=%h %s").stdout.strip()
+    status_out = run_git(context.generated_dir, "status", "--porcelain").stdout
+    entries = []
+    for entry in status_out.splitlines():
+        code, _, path = entry.strip().partition(" ")
+        if not _drift_ignored(path.strip()):
+            entries.append((code, path.strip()))
+
+    lines = [f"DRIFT {module}", f"- Checkpoint: {checkpoint}"]
+    if not entries:
+        lines.append("- Working tree matches the last checkpoint; no hand edits.")
+        return 0, "\n".join(lines) + "\n"
+
+    for code, path in entries:
+        label = _DRIFT_STATUS_LABELS.get(code, code)
+        lines.append(f"- Changed: {path} ({label})")
+    lines.append(
+        "- Hand edits do not survive a re-render: move what must stay into spec "
+        "bullets (see docs/spec-authoring.md), then re-record."
+    )
+    diff = run_git(context.generated_dir, "diff", "HEAD", "--", _DRIFT_PATHSPEC).stdout
+    if diff.strip():
+        lines.append("")
+        lines.append(diff.rstrip("\n"))
+    return 1, "\n".join(lines) + "\n"
 
 
 def prune_project(*, root: Path | None = None, yes: bool = False) -> tuple[int, str]:
@@ -2184,6 +2274,10 @@ def render_one_unit(
     started_at = now_iso()
     units_so_far = [u.to_dict() for u in context.spec.functional_units[: index + 1]]
 
+    prompt_hints = adapter.prompt_hints(context, hashes.required_order)
+    if context.spec.style_lock is not None:
+        prompt_hints = prompt_hints + style_lock_prompt_hints(context.spec.style_lock)
+
     def make_request(phase: str, attempt: int, feedback: str | None) -> RenderRequest:
         return RenderRequest(
             module=context.module,
@@ -2200,7 +2294,7 @@ def render_one_unit(
             phase=phase,
             attempt=attempt,
             feedback=feedback,
-            prompt_hints=adapter.prompt_hints(context, hashes.required_order),
+            prompt_hints=prompt_hints,
             code_fence_language=adapter.code_fence_language,
             module_files_so_far=_module_files_payload(context),
         )
@@ -2225,6 +2319,45 @@ def render_one_unit(
             continue
         _enforce_unit_scoped_conformance(unit, patch)
         apply_patch(patch, context.generated_dir, context.conformance_dir)
+
+        if context.spec.style_lock is not None:
+            violations = style_lock_violations(
+                context.generated_dir / "src", context.spec.style_lock
+            )
+            if violations:
+                message = format_style_lock_failure(unit, violations)
+                write_attempt(
+                    context.generated_dir,
+                    unit.id,
+                    "style-lock",
+                    attempt,
+                    script="mint internal style-lock scan",
+                    exit_code=1,
+                    stdout="\n".join(violations),
+                    stderr="",
+                    classification="style_lock_failed",
+                    summary=f"style lock violations in {unit.id} attempt {attempt}",
+                    prompt=outcome.prompt,
+                    response=outcome.response,
+                    patch=patch,
+                    renderer=outcome.renderer,
+                    cassette_id=outcome.cassette_id,
+                )
+                check_budget(
+                    context,
+                    budget,
+                    unit,
+                    "style-lock",
+                    attempt,
+                    prompt=outcome.prompt,
+                    response=outcome.response,
+                )
+                if attempt > unit_retries:
+                    append_render_log(context.generated_dir, f"style lock failed {unit.id}")
+                    raise MintError(message)
+                feedback = message
+                attempt += 1
+                continue
 
         rendered_unit_ids = tuple(u["id"] for u in units_so_far)
         result = adapter.run_unit_tests(
@@ -2329,6 +2462,48 @@ def render_one_unit(
                 raise MintError(
                     format_phase_failure("unit-regression", unit, "unit_failed", recheck)
                 )
+            if context.spec.style_lock is not None:
+                violations = style_lock_violations(
+                    context.generated_dir / "src", context.spec.style_lock
+                )
+                if violations:
+                    message = format_style_lock_failure(unit, violations)
+                    write_attempt(
+                        context.generated_dir,
+                        unit.id,
+                        "style-lock",
+                        attempt,
+                        script="mint internal style-lock scan",
+                        exit_code=1,
+                        stdout="\n".join(violations),
+                        stderr="",
+                        classification="style_lock_failed",
+                        summary=(
+                            f"style lock violations in {unit.id} conformance attempt {attempt}"
+                        ),
+                        prompt=outcome.prompt,
+                        response=outcome.response,
+                        patch=patch,
+                        renderer=outcome.renderer,
+                        cassette_id=outcome.cassette_id,
+                    )
+                    check_budget(
+                        context,
+                        budget,
+                        unit,
+                        "style-lock",
+                        attempt,
+                        prompt=outcome.prompt,
+                        response=outcome.response,
+                    )
+                    if attempt > conformance_retries:
+                        append_render_log(
+                            context.generated_dir, f"style lock failed {unit.id}"
+                        )
+                        raise MintError(message)
+                    feedback = message
+                    attempt += 1
+                    continue
 
         result = adapter.run_conformance_tests(context, required_order=hashes.required_order)
         classification = adapter.classify_test_result("conformance", result)
@@ -2479,6 +2654,194 @@ def render_one_unit(
     write_metadata(context.generated_dir, metadata)
     append_render_log(context.generated_dir, f"metadata {unit.id} {code_commit}")
     commit_all(context.generated_dir, f"[mint] metadata {unit.id}: {unit.title}", body)
+
+
+# --------------------------------------------------------------------------- #
+# Style lock: mechanical no-freelance-styling enforcement for consumer modules
+# --------------------------------------------------------------------------- #
+
+_STYLE_TAG_RE = re.compile(r"<style\b", re.IGNORECASE)
+_STYLE_ATTR_RE = re.compile(r"""(?<![\w-])style\s*=\s*["']""", re.IGNORECASE)
+_CLASS_ATTR_RE = re.compile(r"""(?<![\w-])class\s*=\s*(["'])(.*?)\1""", re.IGNORECASE)
+
+
+def style_lock_violations(src_dir: Path, lock: StyleLock) -> list[str]:
+    """Scan a module's generated sources for style-lock violations.
+
+    Source-level enforcement: the consumer's code must not *contain* freelance
+    styling, so no recording can ship it. Only ``src/`` is scanned — tests and
+    conformance legitimately quote forbidden substrings in their assertions.
+    """
+    violations: list[str] = []
+    if not src_dir.exists():
+        return violations
+    kit = f"the {lock.kit} module" if lock.kit else "the design kit"
+    for path in sorted(src_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        rel = f"src/{path.relative_to(src_dir).as_posix()}"
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _STYLE_TAG_RE.search(line):
+                violations.append(
+                    f"{rel}:{lineno}: emits a <style element; only {kit} page shell owns styling"
+                )
+            if _STYLE_ATTR_RE.search(line):
+                violations.append(f"{rel}:{lineno}: inline style= attribute is forbidden")
+            for match in _CLASS_ATTR_RE.finditer(line):
+                for token in match.group(2).split():
+                    if not token.startswith(lock.class_prefix):
+                        violations.append(
+                            f"{rel}:{lineno}: class token '{token}' does not start "
+                            f"with '{lock.class_prefix}'"
+                        )
+    return violations
+
+
+def format_style_lock_failure(unit: FunctionalUnit, violations: list[str]) -> str:
+    shown = violations[:20]
+    lines = [f"Style lock violations in {unit.id}:", *(f"- {item}" for item in shown)]
+    if len(violations) > len(shown):
+        lines.append(f"- ... and {len(violations) - len(shown)} more")
+    lines.append(
+        "Remove every <style> element and style= attribute from module sources, and "
+        "use only kit-prefixed class names in class attributes."
+    )
+    return "\n".join(lines)
+
+
+def style_lock_prompt_hints(lock: StyleLock) -> list[str]:
+    kit = f"the required {lock.kit} module" if lock.kit else "the design kit"
+    return [
+        "Style lock (mint scans src/ mechanically on every attempt): never emit a "
+        "<style element or a style= attribute, and every token in every class "
+        f"attribute must start with '{lock.class_prefix}'. All styling comes from {kit}."
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Public-interface analysis: cascade-cost warnings and change reporting
+# --------------------------------------------------------------------------- #
+
+# Above this size, a public literal is almost certainly content (a stylesheet, a
+# template, a query) riding the dependent cascade rather than a genuine constant.
+_PUBLIC_LITERAL_WARN_CHARS = 200
+
+
+def _parse_python_stub(entry: dict[str, str]) -> ast.Module | None:
+    if entry.get("language") != "python":
+        return None
+    try:
+        return ast.parse(str(entry.get("contents", "")))
+    except SyntaxError:
+        return None
+
+
+def public_literal_warnings(interface_files: list[dict[str, str]]) -> list[str]:
+    """Warn about large string literals in a module's public interface stub.
+
+    Everything in the stub rides ``requiredModuleCodeHash``: editing a fat public
+    literal re-renders every dependent in full, usually for output that cannot
+    differ. Python-only — other stacks have no literal-preserving stub.
+    """
+    warnings: list[str] = []
+    for entry in interface_files:
+        tree = _parse_python_stub(entry)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            if not (
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and len(value.value) > _PUBLIC_LITERAL_WARN_CHARS
+            ):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    warnings.append(
+                        f"- WARN: public constant '{target.id}' in {entry.get('path')} "
+                        f"carries a {len(value.value)}-char literal in the public "
+                        "interface; every edit re-renders all dependents in full. "
+                        "Consider a private literal behind a public accessor "
+                        "(docs/spec-authoring.md, UI style lock)."
+                    )
+    return warnings
+
+
+def interface_names(interface_files: list[dict[str, str]]) -> set[str]:
+    """Top-level public names visible in a module's interface stub (Python only)."""
+    names: set[str] = set()
+    for entry in interface_files:
+        tree = _parse_python_stub(entry)
+        if tree is None:
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+    return names
+
+
+def _module_interface_files(context: ModuleContext) -> list[dict[str, str]]:
+    if not context.generated_dir.exists():
+        return []
+    return context.stack_adapter.required_context_files(context.generated_dir)
+
+
+def _dependent_modules(context: ModuleContext) -> list[str]:
+    """Modules whose transitive requires include this module (they cascade on
+    interface changes)."""
+    loader = _spec_loader(context.root, context.config.specs_dir)
+    dependents: list[str] = []
+    for spec_path in sorted((context.root / context.config.specs_dir).glob("*.mint.md")):
+        try:
+            spec = parse_spec_file(spec_path)
+            if spec.module == context.module:
+                continue
+            order = build_render_order(spec.module, loader)
+        except MintError:
+            continue
+        if context.module in (m for m in order if m != spec.module):
+            dependents.append(spec.module)
+    return dependents
+
+
+def interface_change_lines(
+    context: ModuleContext,
+    before: list[dict[str, str]],
+    after: list[dict[str, str]],
+) -> list[str]:
+    if hash_json(before) == hash_json(after):
+        return []
+    added = sorted(interface_names(after) - interface_names(before))
+    removed = sorted(interface_names(before) - interface_names(after))
+    parts = []
+    if added:
+        parts.append("added: " + ", ".join(added))
+    if removed:
+        parts.append("removed: " + ", ".join(removed))
+    detail = f" ({'; '.join(parts)})" if parts else ""
+    lines = [f"- Public interface changed{detail}."]
+    dependents = _dependent_modules(context)
+    if dependents:
+        lines.append(
+            f"- Dependents that will re-render in full: {', '.join(dependents)}"
+        )
+    else:
+        lines.append("- No dependent modules; no cascade.")
+    return lines
 
 
 def _enforce_unit_scoped_conformance(unit: FunctionalUnit, patch: dict[str, Any]) -> None:

@@ -42,7 +42,11 @@ Consequences worth designing for:
   changing a public constant re-renders every dependent. When we removed the
   `person` field across the whole timesheet graph, the `rules` module — whose
   spec we deliberately left untouched — NOOPed through the entire cascade and
-  its cassettes survived byte-identical in the diff.
+  its cassettes survived byte-identical in the diff. Mint watches this for
+  you: a completed render reports when the public interface changed (with the
+  added/removed names and the dependents that will re-render), and warns when
+  a public constant carries a large literal — content like a stylesheet or
+  template riding the cascade belongs behind a private literal + accessor.
 
 ## Write acceptance a test can grip
 
@@ -86,22 +90,76 @@ different app every recording, and screenshot tests fail every legitimate
 re-render by design. Split the problem:
 
 1. **Skin lives in a dedicated module** (`ui-kit`): a design-token stylesheet
-   exported as a **public literal string constant**. Python interface stubs
-   keep literal constants verbatim, so dependents see the full stylesheet in
-   their render prompt and it is hashed into the cascade. Pin exact values
-   (`--ts-accent: #4f46e5`) in acceptance bullets. Restyling the app = editing
-   this one spec; the cascade re-renders dependents automatically.
+   kept in a **private literal** (`_TOKENS_CSS`) behind a **public accessor**
+   (`tokens_css()`). Pin exact values (`--ts-accent: #4f46e5`) in acceptance
+   bullets so every re-record reproduces them byte-for-byte. Privacy matters
+   for the cascade: interface stubs drop private names and function bodies, so
+   restyling re-renders only the kit — dependents NOOP and their cassettes
+   survive. They don't need the values in their prompt anyway: their code
+   calls the page shell, which embeds the stylesheet **at runtime**, so
+   rendered pages pick up a restyle without regenerating a line of dependent
+   code. (The first version exported the stylesheet as a public literal; every
+   color tweak re-rendered every dependent in full, for output that couldn't
+   differ. Don't repeat that.) What dependents *do* need pinned is the **class
+   contract** — names and composition rules — which lives in their own spec
+   bullets and the accessor's docstring.
 2. **Structure is pinned as a DOM contract** in the consuming module: routes,
    `data-testid` hooks, escaped output, status codes — asserted by conformance
    tests. Pixels are never asserted.
-3. **Forbid freelance styling mechanically.** The consuming spec bans its own
-   `<style>`, any `style=` attribute, and any class outside the kit prefix —
-   and an acceptance bullet makes conformance scan for violations. The
-   renderer literally cannot ship its own look.
+3. **Forbid freelance styling mechanically.** Declare the lock in frontmatter
+   and mint enforces it — no prose bullets or generated scans to rely on:
+
+   ```yaml
+   styleLock:
+     kit: ui-kit
+     classPrefix: ts-
+   ```
+
+   Mint scans the generated `src/` on every render attempt for `<style`
+   elements, `style=` attributes, and class tokens outside the prefix, fails
+   the attempt with the offending lines as retry feedback, and injects the
+   constraint into every render prompt. The renderer literally cannot ship its
+   own look. Acceptance bullets asserting the same things remain useful as
+   documentation of the contract, but they are no longer the enforcement.
 4. **Spec the composition rule.** CSS modifier classes only work stacked on
    their base class (`class="ts-button ts-button--danger"`). Our first
    recording used a variant class alone and got browser-default borders. If a
    class system has usage rules, they are contract — pin them.
+
+## The iteration loop: a ratchet, not a sketchpad
+
+Design and debugging are exploratory: you try ten variants to keep one. The
+render loop is the opposite — every spec edit costs live model calls, orphans
+cassettes, and re-rolls everything you didn't pin. Iterating *through* the
+renderer means paying blast-radius prices for throwaway guesses. Don't. Split
+the work into two loops:
+
+**Inner loop — explore outside the renderer, zero renders.** The generated
+tree is ordinary code; edit it directly and run the app. For UI work this is
+especially cheap: because kit classes only reference `var(--ts-*)` tokens, you
+can restyle the entire app live in browser devtools by overriding the `:root`
+block, or hand-edit the generated stylesheet and reload. The offline
+conformance tests still run against a hand-edited tree, so you always know
+whether an experiment left the contract. `mint drift <module>` shows
+everything you've changed since the last checkpoint.
+
+**Outer loop — commit the settled result through the spec, once.** When the
+exploration converges, translate the surviving decisions into spec bullets
+(narrowest owning section — see the blast-radius table), check
+`mint status <module>` to confirm the cost matches your intent, re-record,
+verify an offline replay NOOPs, and prune.
+
+The one hard rule that makes this safe: **hand edits are ephemeral.** The next
+render resets the tree to spec; anything not captured in a bullet is gone by
+design. Treat `mint drift` output as the backport checklist before you
+re-record — and treat lingering drift as a smell, the same way you'd treat an
+uncommitted working tree at the end of the day.
+
+The mental model: the spec loop is a ratchet, not a sketchpad. Exploration is
+high-frequency and low-commitment, so it happens outside the render loop;
+rendering is low-frequency and high-commitment, so it happens once per settled
+decision. If you find yourself paying for a render whose outcome you plan to
+judge by eye and probably discard, you're sketching with the ratchet.
 
 ## The recording workflow
 

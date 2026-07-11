@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Added `styleLock` spec frontmatter: mint mechanically enforces the UI style
+  lock on consumer modules — every render attempt scans generated `src/` for
+  `<style` elements, `style=` attributes, and class tokens outside the declared
+  prefix, failing the attempt with retry feedback and injecting the constraint
+  into every render prompt. The key only enters the spec hash when present, so
+  existing specs and cassettes are unaffected.
+- Completed renders now report interface economics: when the public interface
+  changed since the last checkpoint, the added/removed names and the dependent
+  modules that will re-render are printed; a warning flags public constants
+  carrying large literals (content riding the dependent cascade).
+- Added `mint drift <module>`: shows hand edits in a module's generated tree
+  since its last checkpoint (excluding `.mintgen/` bookkeeping), exits 0/1 like
+  `git diff --exit-code` so it can guard a re-record, and doubles as the
+  backport checklist before translating hand edits into spec bullets.
+- Documented the iteration-loop mental model in `docs/spec-authoring.md`
+  (explore outside the render loop, commit through the spec once) and reworked
+  the style-lock pattern: the ui-kit stylesheet is now a private literal behind
+  a public `tokens_css()` accessor, so restyling re-renders only the kit and
+  dependents NOOP.
 - Added `mint prune [--yes]`: deletes replay cassettes no rendered module
   references. Refuses while any module's generated output is stale or missing
   (the live cassette set is only knowable from an up-to-date render's attempt

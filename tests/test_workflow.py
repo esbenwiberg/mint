@@ -306,6 +306,61 @@ def test_clean_requires_yes(rendered_demo_project, monkeypatch):
     assert not (demo_project.root / ".mint" / "generated" / "taskstore").exists()
 
 
+def test_drift_clean_after_render(rendered_demo_project, monkeypatch):
+    monkeypatch.chdir(rendered_demo_project.root)
+    status, output = workflow.drift_module("taskstore")
+    assert status == 0
+    assert "no hand edits" in output
+    assert "Checkpoint: " in output
+
+
+def test_drift_reports_hand_edits_and_untracked_files(rendered_demo_project, monkeypatch):
+    project = rendered_demo_project
+    monkeypatch.chdir(project.root)
+    gen = project.root / ".mint" / "generated" / "taskstore"
+    tracked = next((gen / "src").rglob("*.py"))
+    tracked.write_text(tracked.read_text(encoding="utf-8") + "\n# hand edit\n", encoding="utf-8")
+    (gen / "src" / "scratch.py").write_text("x = 1\n", encoding="utf-8")
+
+    status, output = workflow.drift_module("taskstore")
+    assert status == 1
+    assert f"Changed: {tracked.relative_to(gen).as_posix()} (modified)" in output
+    assert "Changed: src/scratch.py (untracked)" in output
+    assert "# hand edit" in output  # the tracked diff is shown
+    assert "spec bullets" in output  # backport reminder
+
+
+def test_drift_ignores_mintgen_and_runtime_caches(rendered_demo_project, monkeypatch):
+    """Bookkeeping and cache noise from running tests/the app is not drift.
+
+    Reports are written after the final checkpoint commit, and pycache appears
+    whenever anything imports the generated package — both are exactly what the
+    inner iteration loop produces without any hand edit.
+    """
+    project = rendered_demo_project
+    monkeypatch.chdir(project.root)
+    gen = project.root / ".mint" / "generated" / "taskstore"
+    reports = gen / ".mintgen" / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    (reports / "latest.json").write_text("{}", encoding="utf-8")
+    pycache = gen / "src" / "taskstore" / "__pycache__"
+    pycache.mkdir(parents=True, exist_ok=True)
+    (pycache / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    (gen / "src" / "taskstore" / "stray.pyc").write_bytes(b"\x00")
+
+    status, output = workflow.drift_module("taskstore")
+    assert status == 0
+    assert "no hand edits" in output
+
+
+def test_drift_fails_without_generated_output(demo_project, monkeypatch):
+    monkeypatch.chdir(demo_project.root)
+    status, output = workflow.drift_module("taskstore")
+    assert status == 1
+    assert "FAIL drift taskstore" in output
+    assert "mint render taskstore" in output
+
+
 def _seed_cassettes(project, names):
     cassette_dir = project.root / "resources" / "cassettes" / "v1"
     cassette_dir.mkdir(parents=True, exist_ok=True)
@@ -1547,3 +1602,178 @@ def test_module_render_lock_survives_workspace_wipe(tmp_path):
         with pytest.raises(MintError, match="already in progress"):
             with module_render_lock(module_dir):
                 pass
+
+
+# --------------------------------------------------------------------------- #
+# style lock: mechanical no-freelance-styling enforcement
+# --------------------------------------------------------------------------- #
+
+WEBBY_SPEC = """---
+module: webby
+description: tiny html widget
+imports: []
+requires: []
+stack: python-lib
+styleLock:
+  classPrefix: ts-
+---
+
+## definitions
+- Card: an HTML fragment for one card.
+## implementation
+- Provide card(text) in the webby package returning an HTML string.
+## test
+- pytest unit and conformance tests.
+## functional
+- id: FR1
+  title: card renders a kit-classed div
+  spec:
+    - card(text) wraps text in a div carrying the kit card class.
+  acceptance:
+    - card("hi") returns the exact ts-card div markup around hi.
+"""
+
+
+def webby_patch(*, violating: bool) -> str:
+    if violating:
+        body = "'<div class=\"card\" style=\"color:red\">' + text + '</div>'"
+    else:
+        body = "'<div class=\"ts-card\">' + text + '</div>'"
+    expected = '<div class="ts-card">hi</div>'
+    test_body = (
+        "from webby import card\n\n\n"
+        f"def test_card():\n    assert card('hi') == '{expected}'\n"
+    )
+    files = [
+        {
+            "path": "src/webby/__init__.py",
+            "action": "write",
+            "contents": f"def card(text):\n    return {body}\n",
+        },
+        {"path": "tests/conftest.py", "action": "write", "contents": _CONFTEST},
+        {"path": "tests/test_fr1.py", "action": "write", "contents": test_body},
+        {
+            "path": "FR1/test_fr1.py",
+            "action": "write",
+            "contents": test_body,
+            "root": "conformance",
+        },
+    ]
+    return json.dumps({"summary": "webby render", "files": files})
+
+
+def test_style_lock_violations_scanner(tmp_path):
+    from mint_cli.specs import StyleLock
+
+    src = tmp_path / "src"
+    (src / "webby").mkdir(parents=True)
+    (src / "webby" / "bad.py").write_text(
+        "PAGE = '<style>.x{}</style>'\n"
+        "ROW = '<td style=\"color:red\" class=\"ts-cell wide\">x</td>'\n",
+        encoding="utf-8",
+    )
+    (src / "webby" / "good.py").write_text(
+        "OK = '<div class=\"ts-card ts-card--wide\">x</div>'\n"
+        "ALSO_OK = 'the word style = fine outside an attribute'\n",
+        encoding="utf-8",
+    )
+    lock = StyleLock(class_prefix="ts-")
+
+    violations = workflow.style_lock_violations(src, lock)
+
+    text = "\n".join(violations)
+    assert "bad.py:1" in text and "<style" in text
+    assert "bad.py:2" in text and "style=" in text
+    assert "class token 'wide'" in text
+    assert "good.py" not in text
+
+
+def test_style_lock_retry_heals_and_leaves_audit_trail(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-model")
+    project.write_spec("webby", WEBBY_SPEC)
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient(
+        {
+            "FR1:unit:1": webby_patch(violating=True),
+            "FR1:unit:2": webby_patch(violating=False),
+        }
+    )
+
+    status, output = workflow.render_module("webby", model_client=client)
+
+    assert status == 0, output
+    assert ("FR1", "unit", 1) in client.calls and ("FR1", "unit", 2) in client.calls
+    attempts = project.root / ".mint" / "generated" / "webby" / ".mintgen" / "attempts" / "FR1"
+    gate = json.loads((attempts / "style-lock-1.json").read_text())
+    assert gate["classification"] == "style_lock_failed"
+    # The violating attempt never reached the unit-test phase.
+    assert not (attempts / "unit-1.json").exists()
+    # The retry prompt carried the violations and every prompt carried the hint.
+    retry_prompt = (attempts / "unit-2.prompt.txt").read_text()
+    assert "Style lock violations" in retry_prompt
+    assert "class token 'card'" in retry_prompt
+    assert "Style lock (mint scans src/" in retry_prompt
+
+
+def test_style_lock_exhausts_retries_and_fails(make_project, monkeypatch):
+    project = make_project(provider="model", model="mock-model")
+    project.write_spec("webby", WEBBY_SPEC)
+    monkeypatch.chdir(project.root)
+    client = ScriptedModelClient({"default": webby_patch(violating=True)})
+
+    status, output = workflow.render_module("webby", model_client=client)
+
+    assert status == 1
+    assert "Style lock violations" in output
+    assert "style=" in output or "class token" in output
+
+
+# --------------------------------------------------------------------------- #
+# public-interface analysis: literal warnings and change reporting
+# --------------------------------------------------------------------------- #
+
+
+def test_public_literal_warnings_flag_fat_constants():
+    stub = 'TOKENS_CSS = "' + "x" * 300 + '"\n\ndef page(title, body):\n    ...\n'
+    files = [{"path": "src/kit/__init__.py", "contents": stub, "language": "python"}]
+
+    warnings = workflow.public_literal_warnings(files)
+
+    assert len(warnings) == 1
+    assert "TOKENS_CSS" in warnings[0] and "re-renders all dependents" in warnings[0]
+    # Short constants and non-python stubs stay quiet.
+    assert workflow.public_literal_warnings(
+        [{"path": "a.py", "contents": 'X = "small"', "language": "python"}]
+    ) == []
+    assert workflow.public_literal_warnings(
+        [{"path": "a.ts", "contents": "export const X = 1;", "language": "typescript"}]
+    ) == []
+
+
+def test_interface_change_lines_report_names_and_dependents(rendered_demo_project, monkeypatch):
+    monkeypatch.chdir(rendered_demo_project.root)
+    context = workflow.load_context("taskstore")
+    before = [
+        {
+            "path": "src/taskstore/__init__.py",
+            "contents": "OLD_NAME = 1\n\ndef kept():\n    ...\n",
+            "language": "python",
+        }
+    ]
+    after = [
+        {
+            "path": "src/taskstore/__init__.py",
+            "contents": "def kept():\n    ...\n\ndef new_name():\n    ...\n",
+            "language": "python",
+        }
+    ]
+
+    lines = workflow.interface_change_lines(context, before, after)
+
+    text = "\n".join(lines)
+    assert "Public interface changed" in text
+    assert "added: new_name" in text and "removed: OLD_NAME" in text
+    # tasklist requires taskstore, so it is the dependent that reprices.
+    assert "tasklist" in text
+
+    assert workflow.interface_change_lines(context, before, before) == []

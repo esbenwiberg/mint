@@ -66,6 +66,12 @@ def test_cli_render_status_inspect_clean_roundtrip(demo_project) -> None:
     assert report.returncode == 0
     assert "RUN REPORT tasklist" in report.stdout
 
+    # render and report both wrote into .mintgen/reports; drift must not count
+    # mint's own bookkeeping as hand edits.
+    drift = run_mint("drift", "tasklist", cwd=root)
+    assert drift.returncode == 0
+    assert "no hand edits" in drift.stdout
+
     cleaned = run_mint("clean", "tasklist", "--yes", cwd=root)
     assert cleaned.returncode == 0
     assert not (root / ".mint" / "generated" / "tasklist").exists()
@@ -333,6 +339,7 @@ class CliTest(unittest.TestCase):
             "render",
             "live-smoke",
             "status",
+            "drift",
             "report",
             "inspect",
             "clean",

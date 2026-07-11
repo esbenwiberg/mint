@@ -170,3 +170,52 @@ def test_unit_text_hash_changes_with_spec_text(tmp_path):
     assert unit_text_hash(spec.functional_units[0]) != unit_text_hash(spec2.functional_units[0])
     # FR2 unchanged.
     assert unit_text_hash(spec.functional_units[1]) == unit_text_hash(spec2.functional_units[1])
+
+
+def _with_style_lock(kit_line: str = "", prefix: str = "ts-") -> str:
+    frontmatter = f"stack: python-lib\nstyleLock:\n  classPrefix: {prefix}"
+    if kit_line:
+        frontmatter += f"\n  kit: {kit_line}"
+    return GOOD.replace("stack: python-lib", frontmatter)
+
+
+def test_style_lock_parses_and_lands_in_ir(tmp_path):
+    text = _with_style_lock("base").replace("requires: []", "requires: [base]")
+    spec = parse_spec_file(write(tmp_path, text))
+    assert spec.style_lock is not None
+    assert spec.style_lock.class_prefix == "ts-"
+    assert spec.style_lock.kit == "base"
+    assert spec.to_ir()["styleLock"] == {"classPrefix": "ts-", "kit": "base"}
+
+
+def test_style_lock_absent_keeps_ir_and_hash_stable(tmp_path):
+    # The key must not exist at all when unset — adding it unconditionally would
+    # change every existing spec hash and invalidate every recorded cassette.
+    spec = parse_spec_file(write(tmp_path, GOOD))
+    assert spec.style_lock is None
+    assert "styleLock" not in spec.to_ir()
+
+
+def test_style_lock_kit_must_be_required(tmp_path):
+    with pytest.raises(MintError, match="must be listed in requires"):
+        parse_spec_file(write(tmp_path, _with_style_lock("base")))
+
+
+def test_style_lock_kit_is_optional(tmp_path):
+    spec = parse_spec_file(write(tmp_path, _with_style_lock()))
+    assert spec.style_lock is not None and spec.style_lock.kit is None
+    assert spec.to_ir()["styleLock"] == {"classPrefix": "ts-"}
+
+
+@pytest.mark.parametrize("prefix", ["", "ts", "-ts-", "ts_"])
+def test_style_lock_prefix_must_end_in_dash(tmp_path, prefix):
+    with pytest.raises(MintError, match="classPrefix"):
+        parse_spec_file(write(tmp_path, _with_style_lock(prefix=prefix)))
+
+
+def test_style_lock_rejects_unknown_keys(tmp_path):
+    text = GOOD.replace(
+        "stack: python-lib", "stack: python-lib\nstyleLock:\n  classPrefix: ts-\n  colour: red"
+    )
+    with pytest.raises(MintError, match="Unknown styleLock key"):
+        parse_spec_file(write(tmp_path, text))

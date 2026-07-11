@@ -55,8 +55,27 @@ template: tasklist
 | `rendererProvider` | no | Per-spec renderer override, e.g. `model`, `anthropic`, `claude-cli`, or `codex-cli` for replayed template-free specs |
 | `rendererModel` | no | Per-spec model id override used by cassettes |
 | `rendererPromptVersion` | no | Per-spec prompt version override used by cassettes |
+| `styleLock` | no | Mechanical no-freelance-styling contract for UI consumer modules; see below |
 
 Inline lists (`[a, b]`) and `[]` are supported by the YAML subset in `config.py`.
+
+### `styleLock`
+
+```yaml
+styleLock:
+  kit: ui-kit        # optional; must be listed in requires
+  classPrefix: ts-   # required; letters/digits/dashes ending in '-'
+```
+
+When set, mint itself scans the module's generated `src/` on every render
+attempt: no `<style` element, no `style=` attribute, and every token in every
+`class` attribute must start with `classPrefix`. Violations fail the attempt
+with the offending lines as retry feedback, exactly like a failing unit test,
+so recordings self-heal; a repeat offender fails the render. The constraint is
+also injected into every render prompt. Tests and conformance files are not
+scanned — they legitimately quote forbidden substrings in assertions. The key
+only enters the spec hash when present, so adding it to one spec re-renders
+that module and nothing else.
 
 Template-free model specs omit `template` and set the renderer override keys. The
 deterministic renderer remains for the built-in demo templates and tests.
