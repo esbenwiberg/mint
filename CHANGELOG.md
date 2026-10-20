@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed the coverage trace making every render ~5x slower than it needs to be:
+  the in-process tracer resolved the source path on *every* Python call event
+  (a realpath syscall per call), so the trace ran ~30x slower than a plain
+  pytest run and dominated render wall time. Filenames are now memoized; the
+  measured coverage is byte-identical and the offline test suite drops from
+  ~6.5 min to ~1.5 min on the same machine.
 - Fixed the CLI stray-patch bug: model CLI commands now run in an empty scratch
   directory instead of the project root, so an agentic CLI that executes file
   tools despite being asked to print a patch can never write into the repo; the

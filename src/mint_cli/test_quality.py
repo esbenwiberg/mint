@@ -409,15 +409,34 @@ def line_counter(relpath):
     return count_line
 
 
+# co_filename -> src-relative path (or None when the code is not generated source).
+# The call hook fires for *every* Python call in the process (pytest, importlib,
+# stdlib), so resolving the path per event is a realpath() syscall per call and
+# made the trace ~30x slower than a plain pytest run. Filenames repeat; memoize.
+_relpath_cache = {}
+
+
+def _generated_relpath(filename):
+    try:
+        return _relpath_cache[filename]
+    except KeyError:
+        pass
+    relpath = None
+    try:
+        path = Path(filename).resolve()
+        if path.name != "_mint_provenance.py":
+            relpath = path.relative_to(src_resolved).as_posix()
+    except (OSError, ValueError):
+        relpath = None
+    _relpath_cache[filename] = relpath
+    return relpath
+
+
 def count_generated_calls(frame, event, arg):
     if event != "call":
         return None
-    try:
-        path = Path(frame.f_code.co_filename).resolve()
-        relpath = path.relative_to(src_resolved).as_posix()
-    except (OSError, ValueError):
-        return None
-    if path.name == "_mint_provenance.py":
+    relpath = _generated_relpath(frame.f_code.co_filename)
+    if relpath is None:
         return None
     return line_counter(relpath)
 
