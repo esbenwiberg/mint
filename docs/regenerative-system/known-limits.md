@@ -31,6 +31,10 @@ What this system deliberately does *not* do yet, and where it would bite first.
   `src/`; markup assembled dynamically enough to hide those substrings would slip
   through. The renderer is sloppy, not adversarial, so this is acceptable — but it
   is a scan, not a proof.
+- **App composition is Python-only.** `mint env`/`run`/`exec` compose a rendered
+  graph's `src/` and `.mint-deps` directories onto `PYTHONPATH`. A graph with a
+  TypeScript module is refused: there is no `node_modules` linking or `NODE_PATH`
+  story yet, and the TypeScript stacks run from Vitest, not a built bundle.
 - **TypeScript support is library/Node-only.** `typescript-lib` and
   `typescript-node` use npm-compatible scripts, `tsc --noEmit`, and Vitest, but
   there are no browser UI, React/Vue/Svelte, or bundler-specific stacks yet.
@@ -47,7 +51,10 @@ What this system deliberately does *not* do yet, and where it would bite first.
   silently skipping. Override mutation discovery with `MINT_TS_MUTATION_FINDER_COMMAND`
   (reads `MINT_TS_SRC`, writes candidate spans as JSON to stdout).
 - **YAML subset.** `config.py` parses a small YAML subset (scalars, nested maps,
-  inline `[a, b]` lists). Block-list syntax and anchors are unsupported.
+  inline `[a, b]` lists). Scalars follow the YAML 1.2 core schema for the cases
+  that matter in `mint.yaml`: `-1` and `+3` are ints, `1.5` is a float, `007`
+  is `7` (no octal), `null`/`~` are null, and anything quoted stays a string.
+  Block-list syntax, anchors, and exponent floats (`1e3`) are unsupported.
 - **Conformance regression is "run everything."** Prior units' conformance tests run
   again through the selected stack adapter (pytest for Python, Vitest for
   TypeScript) — correct, but it scales linearly and has no selective regression.

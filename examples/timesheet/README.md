@@ -94,10 +94,21 @@ replays offline — no provider, no network:
 
 ```bash
 cd examples/timesheet
-mint render timesheet-api    # timestore, rules, timesheet-api
-mint render timesheet-cli    # NOOPs the shared deps, renders the CLI
-mint render timesheet-web    # NOOPs again, renders ui-kit + the web UI
+mint render --all            # timestore, rules, ui-kit, then the three leaves
 mint report timesheet-web
+```
+
+(`mint render timesheet-web` renders just that leaf and its requires; a second
+run of either is a NOOP per module.)
+
+Drive the built CLI. `mint run` composes the generated `src/` dirs and any
+`.mint-deps` onto `PYTHONPATH` and runs the spec's `entrypoint:`
+(`timesheet_cli`); everything after `--` reaches the app verbatim:
+
+```bash
+export TIMESHEET_STORE=/tmp/ts-store.json TIMESHEET_TIMER=/tmp/ts-timer.json
+mint run timesheet-cli -- add Apollo 2026-07-06 2.5
+mint run timesheet-cli -- list --week 2026-W28
 ```
 
 Serve the web UI in a real browser (dev only — conformance never starts a
@@ -105,34 +116,17 @@ server; `uvicorn` is your dev tool, not a module dependency):
 
 ```bash
 python3.12 -m pip install uvicorn
-G=$PWD/.mint/generated
-PYTHONPATH="$G/timesheet-web/src:$G/timestore/src:$G/rules/src:$G/ui-kit/src:$G/timesheet-web/.mint-deps" \
-  python3.12 -c "
+mint exec timesheet-web -- python -c "
 import uvicorn
 from timesheet_web import create_web_app
 uvicorn.run(create_web_app('/tmp/ts-web-store.json'), port=8000)
 "
 ```
 
-Drive the built CLI:
-
-```bash
-G=.mint/generated
-PP="$PWD/$G/timesheet-cli/src:$PWD/$G/timestore/src:$PWD/$G/rules/src"
-export TIMESHEET_STORE=/tmp/ts-store.json TIMESHEET_TIMER=/tmp/ts-timer.json
-PYTHONPATH="$PP" python -m timesheet_cli add Apollo 2026-07-06 2.5
-PYTHONPATH="$PP" python -m timesheet_cli list --week 2026-W28
-```
-
-(`-m timesheet_cli`, not a submodule path: the spec pins the package name and
-`main(argv=None)`; the internal module layout is the renderer's to choose and
-has changed between recordings.)
-
 Drive the API in-process (the conformance style — never a server subprocess):
 
 ```bash
-PP="$PWD/$G/timesheet-api/src:$PWD/$G/timestore/src:$PWD/$G/rules/src:$PWD/$G/timesheet-api/.mint-deps"
-PYTHONPATH="$PP" python -c "
+mint exec timesheet-api -- python -c "
 from fastapi.testclient import TestClient
 from timesheet_api import create_app
 c = TestClient(create_app('/tmp/ts-api-store.json'))
@@ -140,6 +134,11 @@ print(c.post('/entries', json={'project': 'Apollo',
                                'date': '2026-07-06', 'hours': 6.0}).json())
 "
 ```
+
+`mint env <module>` prints the same environment as export lines (or `--format
+json`/`path`) for anything that is not a one-liner. If a spec moved since the
+last render, these commands warn about the stale modules on stderr and still
+run; `mint render --all` brings the graph back in step.
 
 ### Re-recording after a spec change (manual, calls a real model)
 
@@ -159,7 +158,8 @@ Everything under [`claude/`](./claude) is **hand-written**, not mint-generated �
 it is environment wiring, not a bounded module:
 
 - [`claude/timesheet.sh`](./claude/timesheet.sh) — wrapper that sets
-  `PYTHONPATH` to the generated modules' `src` dirs, defaults
+  `PYTHONPATH` to the generated modules' `src` dirs (what `mint run
+  timesheet-cli` does, without needing `mint` on the hook's PATH), defaults
   `TIMESHEET_STORE`/`TIMESHEET_TIMER` to `~/.timesheet/`, and execs the CLI.
 - [`claude/session_start.sh`](./claude/session_start.sh) — SessionStart hook:
   runs `timesheet start` with the project from `TIMESHEET_PROJECT` or the repo
@@ -171,15 +171,19 @@ The hooks are **non-blocking and fail-soft**: missing generated modules or a
 timer already started by a concurrent session all exit `0` quietly. A broken
 timesheet must never break a session.
 
-### Project-scoped setup (this repo)
+### Project-scoped setup (this repo, opt-in)
 
-The repo's [`.claude/settings.json`](../../.claude/settings.json) wires both
-hooks, and [`.claude/skills/timesheet/SKILL.md`](../../.claude/skills/timesheet/SKILL.md)
-adds a `/timesheet` skill that prints today's and this week's logged hours.
+The hooks are **not** wired by default: a fresh clone must not start timers
+behind your back. Opt in per clone by copying the example into your personal
+(gitignored) settings file, then render the CLI:
 
 ```bash
+cp examples/timesheet/claude/settings.example.json .claude/settings.local.json
 cd examples/timesheet && mint render timesheet-cli
 ```
+
+[`.claude/skills/timesheet/SKILL.md`](../../.claude/skills/timesheet/SKILL.md)
+adds a `/timesheet` skill that prints today's and this week's logged hours.
 
 Start a Claude Code session in this repo: the timer starts; end the session and
 the entry is booked. `/timesheet` shows the tally.

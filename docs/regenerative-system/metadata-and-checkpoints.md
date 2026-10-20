@@ -94,6 +94,14 @@ commits twice to the nested repo: a **code** commit (`[mint] completed FRn: …`
 prompt version, and model. `beforeCommit` (the HEAD before the unit) is the rollback
 point a partial re-render resets to.
 
+Why two commits rather than one: the metadata record for a unit stores the hash of
+the code commit it certifies (`finishedCommit`), and a commit cannot contain its own
+hash. Folding metadata into the code commit would mean either dropping that
+back-reference (so `mint drift` and resume could no longer prove which tree was
+gated) or moving it into a tag or note, which `reset`, `prune`, and the trim logic
+would all have to learn. The pair is the cheaper invariant: the code commit is
+always exactly what the gates passed, and the metadata commit on top is the receipt.
+
 If a render aborts after one or more units pass but before the next unit records its
 own `beforeCommit`, the next render resumes from the previous passed unit's
 `finishedCommit`. That preserves completed units and starts at the first missing or

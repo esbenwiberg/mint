@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- Build an app from specs: `mint run <module> -- args` runs a rendered module
+  graph (generated `src/` dirs plus module-local `.mint-deps` on `PYTHONPATH`,
+  `python -m <entrypoint>`), `mint exec <module> -- cmd` runs any command in
+  that environment, and `mint env <module>` prints it (shell/json/path).
+  Unrendered graphs are refused with the fix; stale modules warn on stderr.
+  New optional spec key `entrypoint:` (runtime wiring, never hashed, so adding
+  it re-renders nothing). Python stacks only for now.
+- `mint render --all` renders every spec in the project in dependency order.
+- New guide: docs/regenerative-system/building-an-app.md; the timesheet example
+  now uses `mint run`/`mint exec` instead of hand-built PYTHONPATH lines.
+- `mint_cli.workflow` is now a package split by concern (`context`, `planning`,
+  `engine`, `stylelock`, `interface`, `scaffold`, `lint`, `health`, `reports`,
+  `maintenance`) instead of one 3,200-line module. Every previous name is still
+  importable from `mint_cli.workflow`; no behaviour change.
+- Documented why each unit lands as a code commit plus a metadata commit
+  (metadata-and-checkpoints.md).
+- `mint render` now streams progress to stderr while it runs (module, unit,
+  phase, attempt, elapsed seconds) instead of staying silent until the report
+  prints. On when stderr is a TTY; `MINT_PROGRESS=1`/`0` forces it.
+- The mutation probe is coverage-guided: it launches only the test suites that
+  actually execute the mutated function body, and reports a never-executed
+  public function as a survivor without launching anything. Fewer pytest
+  launches per unit, same verdicts; verdicts gain a `testLaunches` count.
+- New `limits.maxModuleFilesChars` (default 120000): a module whose generated
+  sources no longer fit in a render prompt fails with the largest files named
+  and a split-the-module hint, instead of silently embedding everything.
+- `mint.yaml` scalars: `-1` is now an int (it used to be the string `"-1"`),
+  `1.5` a float, `null`/`~` null. Integer limits reject floats and booleans
+  outright instead of truncating them.
+- The timesheet example's Claude Code session hooks are no longer wired by
+  the repo's `.claude/settings.json`; a fresh clone no longer starts timers.
+  Opt in by copying `examples/timesheet/claude/settings.example.json` to the
+  gitignored `.claude/settings.local.json`.
+- `.clawpatch/` review-tool state is untracked (it was both committed and
+  gitignored).
+- Both style-lock gates (unit and conformance phases) now share one helper.
+
+- Fixed the coverage trace making every render ~5x slower than it needs to be:
+  the in-process tracer resolved the source path on *every* Python call event
+  (a realpath syscall per call), so the trace ran ~30x slower than a plain
+  pytest run and dominated render wall time. Filenames are now memoized; the
+  measured coverage is byte-identical and the offline test suite drops from
+  ~6.5 min to ~1.5 min on the same machine.
+- CI now also runs the offline suite on Python 3.14, which the `mint` launcher
+  already prefers when installed.
+
 - Fixed the CLI stray-patch bug: model CLI commands now run in an empty scratch
   directory instead of the project root, so an agentic CLI that executes file
   tools despite being asked to print a patch can never write into the repo; the

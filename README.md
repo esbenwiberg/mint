@@ -85,6 +85,22 @@ MINT_LIVE=1 mint live-smoke notes
 Anthropic API providers require `ANTHROPIC_API_KEY` and the `live` optional extra.
 CLI providers use the auth already configured in `claude` or `codex`.
 
+## Build An App From Specs
+
+An app is a module graph: one spec per bounded module, wired with `requires`.
+Render the graph and run the leaf; Mint composes the generated sources (and any
+module-local third-party deps) into the process environment, so what runs is what
+the conformance gates tested:
+
+```bash
+mint render --all                               # every spec, dependency order
+mint run timesheet-cli -- add Apollo 2026-07-06 2.5
+mint exec timesheet-web -- python -c "import uvicorn, timesheet_web as w; uvicorn.run(w.create_web_app('/tmp/s.json'))"
+```
+
+See `docs/regenerative-system/building-an-app.md` and the six-module
+`examples/timesheet` graph (store, rules, HTTP API, CLI, design system, web UI).
+
 ## Demos
 
 Render the built-in dependency demo:
@@ -176,7 +192,11 @@ conformance/                  Ignored generated conformance tests
   and replay fixtures.
 - `mint lint <module>` checks spec quality before rendering.
 - `mint next [<module>]` shows the next recommended command.
-- `mint render <module>` renders a module and required dependencies.
+- `mint render <module>` renders a module and required dependencies;
+  `mint render --all` renders every spec in dependency order.
+- `mint run <module> -- args` runs a rendered module graph as an app;
+  `mint exec <module> -- cmd` runs any command in that environment, and
+  `mint env <module>` prints it.
 - `mint status <module>` explains whether a render would be a no-op or a slice.
 - `mint drift <module>` shows hand edits in generated output since the last
   checkpoint.
@@ -216,6 +236,7 @@ system as built:
 - model record/replay
 - module graph and cascade behavior
 - metadata, checkpoints, reports, and budgets
+- building and running an app from a module graph
 - test-quality gates
 - known limits and next risks
 

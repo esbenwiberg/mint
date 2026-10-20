@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -1866,3 +1865,53 @@ def test_healthcheck_rejects_binary_and_oversized_resources(make_project, monkey
     resource.write_text("fine\n", encoding="utf-8")
     status, output = workflow.healthcheck_module("calc", allow_missing_replay=True)
     assert status == 0, output
+
+
+def test_module_files_payload_rejects_modules_over_the_prompt_cap(tmp_path):
+    from types import SimpleNamespace
+
+    from mint_cli.stacks import PythonStackAdapter
+    from mint_cli.workflow import _module_files_payload
+
+    generated = tmp_path / "gen"
+    (generated / "src" / "big").mkdir(parents=True)
+    (generated / "src" / "big" / "__init__.py").write_text("x = 1\n" * 50, encoding="utf-8")
+    (generated / "src" / "big" / "small.py").write_text("y = 2\n", encoding="utf-8")
+
+    def context_with_cap(cap: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            module="big",
+            generated_dir=generated,
+            stack_adapter=PythonStackAdapter(),
+            config=SimpleNamespace(limits=SimpleNamespace(max_module_files_chars=cap)),
+        )
+
+    assert len(_module_files_payload(context_with_cap(100_000))) == 2
+
+    with pytest.raises(MintError) as exc:
+        _module_files_payload(context_with_cap(100))
+    message = str(exc.value)
+    assert "limits.maxModuleFilesChars is 100" in message
+    assert "src/big/__init__.py (300 chars)" in message
+    assert "split the module" in message
+
+
+def test_progress_lines_go_to_stderr_only_when_enabled(monkeypatch, capsys):
+    from mint_cli import progress
+
+    monkeypatch.setenv("MINT_PROGRESS", "0")
+    progress.report("hidden")
+    assert capsys.readouterr() == ("", "")
+
+    monkeypatch.setenv("MINT_PROGRESS", "1")
+    progress.reset_clock()
+    progress.report("visible")
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("mint [+")
+    assert err.rstrip().endswith("s] visible")
+
+    # Unset: follows stderr.isatty(), which is False under capture.
+    monkeypatch.delenv("MINT_PROGRESS")
+    progress.report("quiet")
+    assert capsys.readouterr() == ("", "")

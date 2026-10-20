@@ -7,9 +7,12 @@ run report. Budget limits live in `mint.yaml`.
 limits:
   maxRenderAttempts: 0
   maxRenderTokensEstimate: 0
+  maxModuleFilesChars: 120000
 ```
 
-`0` means unlimited. Any positive value is enforced during the render.
+`0` means unlimited for the two budgets. Any positive value is enforced during
+the render. `maxModuleFilesChars` caps how much of the module's own generated
+source a single render prompt may embed; see `commands.md` under `mint render`.
 
 ## Attempt budget
 

@@ -36,9 +36,18 @@ with:
 raise AssertionError("mint mutation probe: <name>")
 ```
 
-It then re-runs unit and conformance scripts. If tests still pass, the generated
-test suite is too weak and the gate fails. Source files are restored before the
-render continues or reports failure.
+It then re-runs the project's unit and conformance scripts. If tests still pass,
+the generated test suite is too weak and the gate fails. Source files are
+restored before the render continues or reports failure.
+
+The probe is coverage-guided: the coverage trace records which lines each suite
+executed, and a suite that never enters a function body cannot fail when that
+body becomes a `raise`. So the probe launches only the suites that execute the
+candidate (unit first, then conformance), and a public function no test
+executes is reported as a survivor without launching anything. The verdict's
+`testLaunches` counts the script runs it actually took. Without coverage data
+(for example a stack whose adapter does not report per-suite lines) every
+candidate runs both suites, so the gate is never weaker, only cheaper.
 
 This is intentionally lightweight, not full mutation testing. By default it tests
 up to three public candidates per unit.

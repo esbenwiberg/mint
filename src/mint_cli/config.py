@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,13 @@ class RendererConfig:
     prompt_version: str
 
 
+# Every render prompt embeds the module's own generated sources in full. Past this
+# many characters the module is no longer "bounded" in any useful sense: prompts
+# balloon, the model loses the thread, and cassettes become unwieldy. The fix is
+# to split the module, not to raise the cap.
+DEFAULT_MAX_MODULE_FILES_CHARS = 120_000
+
+
 @dataclass(frozen=True)
 class LimitConfig:
     unit_retries: int
@@ -33,6 +41,7 @@ class LimitConfig:
     max_model_response_chars: int
     max_render_attempts: int
     max_render_tokens_estimate: int
+    max_module_files_chars: int
 
 
 @dataclass(frozen=True)
@@ -131,6 +140,12 @@ def load_config(path: Path) -> MintConfig:
                     path,
                     minimum=0,
                 ),
+                max_module_files_chars=_int_in_range(
+                    limits.get("maxModuleFilesChars", DEFAULT_MAX_MODULE_FILES_CHARS),
+                    "limits.maxModuleFilesChars",
+                    path,
+                    minimum=1,
+                ),
             ),
             test_quality=TestQualityConfig(
                 enabled=_bool(test_quality_raw.get("enabled", True), "testQuality.enabled", path),
@@ -165,7 +180,9 @@ def _mapping(value: Any, field_name: str, config_path: Path) -> dict[str, Any]:
 
 
 def _int(value: Any, field_name: str, config_path: Path) -> int:
-    if isinstance(value, bool):
+    # bool is an int subclass and 1.5 would silently truncate to 1; both are
+    # config typos we want surfaced, not absorbed.
+    if isinstance(value, (bool, float)):
         raise MintError(f"Invalid {field_name} in {config_path}: expected an integer.")
     try:
         return int(value)
@@ -375,7 +392,18 @@ def _split_list_items(inner: str) -> list[str]:
     return items
 
 
+_INT_RE = re.compile(r"^[+-]?[0-9]+$")
+_FLOAT_RE = re.compile(r"^[+-]?(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
+
+
 def parse_scalar(value: str) -> Any:
+    """Parse one YAML scalar from the supported subset.
+
+    Numbers follow the YAML 1.2 core schema closely enough for config use:
+    ``-1`` is an int (not the string "-1"), ``1.5`` is a float, and a leading
+    zero does not mean octal (``007`` is 7). Quote a value to keep it a string.
+    ``null``/``~`` become ``None``; anything else is a string.
+    """
     if value.startswith("[") and value.endswith("]"):
         inner = value[1:-1].strip()
         if not inner:
@@ -383,8 +411,12 @@ def parse_scalar(value: str) -> Any:
         return [parse_scalar(item.strip()) for item in _split_list_items(inner)]
     if value in {"true", "false"}:
         return value == "true"
-    if value.isdigit():
+    if value in {"null", "~"}:
+        return None
+    if _INT_RE.match(value):
         return int(value)
+    if _FLOAT_RE.match(value):
+        return float(value)
     if (value.startswith('"') and value.endswith('"')) or (
         value.startswith("'") and value.endswith("'")
     ):

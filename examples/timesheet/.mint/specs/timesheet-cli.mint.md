@@ -4,6 +4,7 @@ description: Command-line personal timesheet client with a running-timer workflo
 imports: [timestore, rules]
 requires: [timestore, rules]
 stack: python-cli
+entrypoint: timesheet_cli
 rendererProvider: claude-cli
 rendererModel: sonnet
 rendererPromptVersion: timesheet-v1

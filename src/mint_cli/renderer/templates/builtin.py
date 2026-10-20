@@ -126,9 +126,9 @@ def build_taskstore(request: RenderRequest) -> list[dict]:
         _m("README.md", _readme("taskstore", "library API: Task, TaskStore")),
         _m(
             f"src/{package}/__init__.py",
-            f'"""Generated storage library."""\n\n'
-            f"from .store import Task, TaskStore\n\n"
-            f'__all__ = ["Task", "TaskStore"]\n',
+            '"""Generated storage library."""\n\n'
+            "from .store import Task, TaskStore\n\n"
+            '__all__ = ["Task", "TaskStore"]\n',
         ),
         _m(f"src/{package}/store.py", _store_module(package)),
         _provenance(request, package),
