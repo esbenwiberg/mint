@@ -193,13 +193,16 @@ Hand edits do not survive a re-render. Use the drift output as the backport
 checklist: move every decision that must stay into spec bullets, then
 re-record. See the iteration-loop section of `docs/spec-authoring.md`.
 
-## `mint render <module> [--from FRN] [--range FRN:FRM] [--force]`
+## `mint render <module> | --all [--from FRN] [--range FRN:FRM] [--force]`
 
 Render the module and everything it requires, required-first. With no flags it does
-the minimal work the plan implies (often a no-op).
+the minimal work the plan implies (often a no-op). `--all` renders every spec in
+the project in dependency order, each with its own budget; it stops at the first
+failing module and rejects `--from`/`--range`.
 
 ```bash
 mint render tasklist                 # render/refresh the whole dependency graph
+mint render --all                    # every spec in .mint/specs, dependency order
 mint render taskstore --from FR2     # re-render FR2 onward
 mint render taskstore --range FR1:FR1 # re-render just FR1
 mint render taskstore --force        # full re-render regardless of hashes
@@ -232,6 +235,82 @@ verdicts.
 
 If `limits.maxRenderAttempts` or `limits.maxRenderTokensEstimate` is exceeded, the
 render aborts and writes `.mint/generated/<module>/.mintgen/reports/budget-abort.json`.
+
+Every render prompt embeds the module's own generated sources in full, so a
+module that outgrows `limits.maxModuleFilesChars` (default 120000 characters)
+fails the render with the largest files named. The fix is to split the module
+behind a `requires:` edge, not to raise the cap: dependents only see a
+module's public interface stub, which is how the graph stays bounded.
+
+### Progress output
+
+The render report is printed when the command finishes; while it runs, progress
+lines go to **stderr** so a live render is never silent:
+
+```text
+mint [+   0.0s] notes: render FR1:FR3 via model (spec changed)
+mint [+   0.1s] notes FR1: Create a note
+mint [+   0.1s] notes FR1: unit render attempt 1 (model)
+mint [+  41.7s] notes FR1: unit tests (attempt 1)
+mint [+  44.2s] notes FR1: conformance tests (attempt 1)
+mint [+  46.0s] notes FR1: test-quality gate
+mint [+  46.1s] notes: coverage trace (unit tests)
+mint [+  49.3s] notes: mutation probe 1/3 add_note (runs: unit)
+mint [+  52.8s] notes FR1: completed in 52.7s
+```
+
+Progress is on when stderr is a terminal. `MINT_PROGRESS=1` forces it on (CI
+logs), `MINT_PROGRESS=0` forces it off. Stdout only ever carries the report, so
+`mint render notes > report.txt` stays clean either way.
+
+## `mint env <module> [--format shell|json|path]`
+
+Print the environment that runs a rendered module graph as an app: the module's
+generated `src/`, every required module's `src/` in dependency order, and each
+module-local `.mint-deps`, on `PYTHONPATH`; plus `PYTHONDONTWRITEBYTECODE=1`,
+`MINT_APP_MODULE`, and `MINT_APP_ROOT`. Refuses when any module of the graph is
+unrendered or not a Python stack.
+
+```bash
+mint env timesheet-cli                 # export lines; eval "$(mint env timesheet-cli)"
+mint env timesheet-cli --format path   # the bare PYTHONPATH value
+mint env timesheet-cli --format json   # {module, modules, entrypoint, pythonpath, env, stale}
+# # mint env timesheet-cli: timesheet-cli, timestore, rules
+# # stale (re-render with `mint render timesheet-cli`): rules
+# export PYTHONPATH=/…/.mint/generated/timesheet-cli/src:/…/timestore/src:/…/rules/src
+```
+
+A module whose next render would not be a NOOP is listed as stale; the command
+still succeeds.
+
+## `mint run <module> [--entry DOTTED] [args…] [-- args…]`
+
+Run the module's entrypoint (`python -m <dotted>`) inside that environment and
+return its exit code. The entrypoint is `--entry`, else the spec's `entrypoint:`
+frontmatter key, else `<module>` with dashes as underscores when that package has
+a `__main__.py`; otherwise the error names the runnable candidates under `src/`.
+Everything after `--` reaches the app verbatim, flags included.
+
+```bash
+mint run timesheet-cli -- add Apollo 2026-07-06 2.5
+mint run tasklist --entry tasklist.cli -- --help
+```
+
+Stale modules print a warning on stderr; the app still runs. The interpreter is
+`PYTHON_BIN` or the one running `mint`, the same rule the render used to install
+`.mint-deps`.
+
+## `mint exec <module> -- <command…>`
+
+Run any command inside the module graph's environment (a dev server, a REPL, a
+one-off script) and return its exit code.
+
+```bash
+mint exec timesheet-web -- python -c "import uvicorn, timesheet_web as w; uvicorn.run(w.create_web_app('/tmp/s.json'))"
+mint exec timesheet-api -- python -m pytest -q some/extra/tests
+```
+
+See [building-an-app.md](building-an-app.md) for the end-to-end story.
 
 ## `mint live-smoke <module>`
 

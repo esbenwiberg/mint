@@ -14,6 +14,7 @@ import sys
 import tempfile
 from typing import Any
 
+from . import progress
 from .stacks import (
     PYTEST_NO_TESTS,
     _run_capture,
@@ -74,10 +75,14 @@ def evaluate_test_quality(
         mutation = {"status": "skipped", "reason": reason, "deferred": True}
     else:
         coverage = adapter.measure_coverage(context, required_paths=required_src)
+        # Per-target line sets are a probe input, not part of the verdict that
+        # lands in metadata (they would bloat every unit record).
+        coverage_by_target = coverage.pop("_byTarget", None)
         mutation = adapter.run_mutation_probe(
             context,
             required_paths=required_src,
             baseline_already_passed=baseline_already_passed,
+            coverage_by_target=coverage_by_target,
         )
 
     failures: list[str] = []
@@ -279,6 +284,7 @@ def _measure_coverage(context: Any, *, required_src: list[Path]) -> dict[str, An
         "coveredLines": covered,
         "totalLines": total,
         "files": result["files"],
+        "_byTarget": result.get("byTarget"),
     }
     if status == "failed":
         verdict["reason"] = f"coverage {percent:.1f}% is below threshold {threshold}%"
@@ -289,6 +295,7 @@ def _run_trace_process(context: Any, *, required_src: list[Path]) -> dict[str, A
     runs: list[dict[str, Any]] = []
     timeout = _timeout_seconds("MINT_TEST_TIMEOUT_SECONDS", _DEFAULT_TEST_TIMEOUT)
     for target in ["unit", "conformance"]:
+        progress.report(f"{context.module}: coverage trace ({target} tests)")
         env = _script_env(context, required_src)
         env["MINT_TRACE_TARGET"] = target
         # Run under the same interpreter the project scripts honour (PYTHON_BIN),
@@ -339,11 +346,15 @@ def _run_trace_process(context: Any, *, required_src: list[Path]) -> dict[str, A
 
     totals: dict[str, int] = {}
     covered: dict[str, set[int]] = {}
+    by_target: dict[str, dict[str, set[int]]] = {}
     for run in runs:
+        target_lines = by_target.setdefault(str(run.get("target")), {})
         for file_data in run.get("files", []):
             relpath = str(file_data["path"])
             totals[relpath] = int(file_data["totalLines"])
-            covered.setdefault(relpath, set()).update(int(line) for line in file_data["coveredLineNumbers"])
+            lines = {int(line) for line in file_data["coveredLineNumbers"]}
+            covered.setdefault(relpath, set()).update(lines)
+            target_lines[relpath] = lines
 
     files = [
         {
@@ -359,6 +370,7 @@ def _run_trace_process(context: Any, *, required_src: list[Path]) -> dict[str, A
         "coveredLines": sum(item["coveredLines"] for item in files),
         "totalLines": sum(item["totalLines"] for item in files),
         "files": files,
+        "byTarget": by_target,
         "stdout": "\n".join(str(run.get("stdout", "")) for run in runs),
         "stderr": "\n".join(str(run.get("stderr", "")) for run in runs),
     }
@@ -526,7 +538,17 @@ def _run_mutation_probe(
     *,
     required_src: list[Path],
     baseline_already_passed: bool = False,
+    coverage_by_target: dict[str, dict[str, set[int]]] | None = None,
 ) -> dict[str, Any]:
+    """Mutate public functions one at a time and check that the tests notice.
+
+    ``coverage_by_target`` (``{"unit": {relpath: {lines}}, "conformance": ...}``,
+    from the coverage trace) is used to skip test launches that cannot kill a
+    mutant: a suite that never executes the function body cannot fail when that
+    body is replaced by a ``raise``. A body no suite executes is reported as a
+    survivor without launching anything. Without coverage data every candidate
+    runs the unit suite, then the conformance suite.
+    """
     if not context.config.test_quality.mutation_probe:
         return {"status": "skipped", "reason": "mutationProbe is false"}
 
@@ -540,25 +562,44 @@ def _run_mutation_probe(
     tested = candidates[:max_candidates]
     survivors: list[dict[str, Any]] = []
 
-    for candidate in tested:
-        killed = _mutate_and_test(context, candidate, required_src=required_src)
-        if not killed:
-            survivors.append(
-                {
-                    "path": candidate.relpath,
-                    "name": candidate.name,
-                    "line": candidate.lineno,
-                }
+    launches = 0
+    for position, candidate in enumerate(tested, start=1):
+        targets = _targets_executing(candidate, coverage_by_target)
+        progress.report(
+            f"{context.module}: mutation probe {position}/{len(tested)} {candidate.name} "
+            f"(runs: {', '.join(targets) or 'none needed'})"
+        )
+        killed = False
+        if targets:
+            killed, used = _mutate_and_test(
+                context, candidate, required_src=required_src, targets=targets
             )
+            launches += used
+        if not killed:
+            survivor = {
+                "path": candidate.relpath,
+                "name": candidate.name,
+                "line": candidate.lineno,
+            }
+            if not targets:
+                survivor["reason"] = "no test executes this function body"
+            survivors.append(survivor)
             break
 
     if survivors:
+        reason = "tests still passed after mutating generated implementation"
+        if survivors[0].get("reason"):
+            reason = (
+                f"{survivors[0]['name']} ({survivors[0]['path']}:{survivors[0]['line']}) "
+                "is never executed by the unit or conformance tests"
+            )
         return {
             "status": "failed",
-            "reason": "tests still passed after mutating generated implementation",
+            "reason": reason,
             "candidateCount": len(candidates),
             "testedCandidates": len(tested),
             "survivors": survivors,
+            "testLaunches": launches,
         }
     return {
         "status": "passed" if tested else "skipped",
@@ -566,7 +607,34 @@ def _run_mutation_probe(
         "candidateCount": len(candidates),
         "testedCandidates": len(tested),
         "survivors": [],
+        "testLaunches": launches,
     }
+
+
+_ALL_TARGETS = ("unit", "conformance")
+
+
+def _targets_executing(
+    candidate: MutationCandidate,
+    coverage_by_target: dict[str, dict[str, set[int]]] | None,
+) -> tuple[str, ...]:
+    """Which test suites execute at least one line of the candidate's body.
+
+    Falls back to both suites when no coverage data is available, so the probe
+    is never weaker than before — only cheaper when it can prove a launch is
+    pointless.
+    """
+    if not coverage_by_target:
+        return _ALL_TARGETS
+    body = range(candidate.body_start, candidate.body_end + 1)
+    selected: list[str] = []
+    for target in _ALL_TARGETS:
+        lines = coverage_by_target.get(target, {}).get(candidate.relpath)
+        if lines is None:
+            continue
+        if any(line in lines for line in body):
+            selected.append(target)
+    return tuple(selected)
 
 
 def _run_mutation_baseline(context: Any, *, required_src: list[Path]) -> dict[str, Any]:
@@ -658,17 +726,29 @@ def _mutate_and_test(
     candidate: MutationCandidate,
     *,
     required_src: list[Path],
-) -> bool:
+    targets: tuple[str, ...] = _ALL_TARGETS,
+) -> tuple[bool, int]:
+    """Apply one mutation, run the selected suites, restore the file.
+
+    Returns ``(killed, launches)``: whether any suite failed, and how many
+    script launches it took (stops at the first failure).
+    """
+    scripts = {
+        "unit": context.config.scripts.unit,
+        "conformance": context.config.scripts.conformance,
+    }
     original = candidate.path.read_text(encoding="utf-8")
     try:
         candidate.path.write_text(_mutated_source(original, candidate), encoding="utf-8")
         _remove_runtime_caches(context.generated_dir)
         _remove_runtime_caches(context.conformance_dir)
-        unit_result = _run_project_script(context, context.config.scripts.unit, required_src)
-        if unit_result.returncode != 0:
-            return True
-        conf_result = _run_project_script(context, context.config.scripts.conformance, required_src)
-        return conf_result.returncode != 0
+        launches = 0
+        for target in targets:
+            launches += 1
+            result = _run_project_script(context, scripts[target], required_src)
+            if result.returncode != 0:
+                return True, launches
+        return False, launches
     finally:
         candidate.path.write_text(original, encoding="utf-8")
         _remove_runtime_caches(context.generated_dir)

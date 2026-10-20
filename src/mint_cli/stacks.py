@@ -206,6 +206,7 @@ class StackAdapter(Protocol):
         *,
         required_paths: list[Path],
         baseline_already_passed: bool = False,
+        coverage_by_target: dict[str, dict[str, set[int]]] | None = None,
     ) -> dict[str, Any]:
         """Mutate generated source and confirm the tests catch it."""
         ...
@@ -442,6 +443,7 @@ class PythonStackAdapter:
         *,
         required_paths: list[Path],
         baseline_already_passed: bool = False,
+        coverage_by_target: dict[str, dict[str, set[int]]] | None = None,
     ) -> dict[str, Any]:
         from .test_quality import _run_mutation_probe
 
@@ -449,6 +451,7 @@ class PythonStackAdapter:
             context,
             required_src=required_paths,
             baseline_already_passed=baseline_already_passed,
+            coverage_by_target=coverage_by_target,
         )
 
     def script_env(self, context: Any, required_paths: list[Path]) -> dict[str, str]:
@@ -1155,6 +1158,7 @@ class TypeScriptStackAdapter:
         *,
         required_paths: list[Path],
         baseline_already_passed: bool = False,
+        coverage_by_target: dict[str, dict[str, set[int]]] | None = None,
     ) -> dict[str, Any]:
         config = context.config.test_quality
         if not config.mutation_probe:
@@ -1519,7 +1523,7 @@ def known_stacks() -> list[str]:
 
 def script_env(context: Any, required_paths: list[Path]) -> dict[str, str]:
     """Canonical environment for running Python project scripts and the coverage
-    trace. Public so the render engine (workflow.py) can import it instead of keeping
+    trace. Public so the render engine (workflow/engine.py) can import it instead of keeping
     a drifted duplicate."""
     env = os.environ.copy()
     env["MINT_GENERATED_DIR"] = str(context.generated_dir)

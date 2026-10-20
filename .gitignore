@@ -11,6 +11,8 @@ __pycache__/
 conformance/*
 !conformance/.gitkeep
 
-# Internal review-tool state (runs, findings, locks). Already-tracked files are
-# left in place; this only stops new runtime state from being committed.
+# Internal review-tool state (runs, findings, locks) — runtime state, never tracked.
 .clawpatch/
+
+# Personal Claude Code settings (hooks, permissions) — see examples/timesheet/README.md
+.claude/settings.local.json

@@ -56,6 +56,7 @@ template: tasklist
 | `rendererModel` | no | Per-spec model id override used by cassettes |
 | `rendererPromptVersion` | no | Per-spec prompt version override used by cassettes |
 | `styleLock` | no | Mechanical no-freelance-styling contract for UI consumer modules; see below |
+| `entrypoint` | no | Dotted module `mint run` executes with `python -m`; runtime wiring only, never hashed, so adding it re-renders nothing |
 
 Inline lists (`[a, b]`) and `[]` are supported by the YAML subset in `config.py`.
 

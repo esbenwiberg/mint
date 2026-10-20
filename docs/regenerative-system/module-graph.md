@@ -87,3 +87,10 @@ the configured `generatedDir` (`.mint/generated/<module>/` by default), with its
 own history and its own `.mintgen/module.json`. The outer repo `.gitignore`s the
 default generated output and `conformance/*`. Re-rendering a slice uses that
 nested history to roll back precisely (`git reset --hard <beforeCommit>`).
+
+## Running the graph
+
+`mint env`, `mint run`, and `mint exec` compose a rendered graph's generated
+sources (module first, then its transitive `requires` in dependency order, then
+any `.mint-deps`) into a process environment. See
+[building-an-app.md](building-an-app.md).

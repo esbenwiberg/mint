@@ -7,7 +7,7 @@ All code lives under `src/mint_cli/`.
 | Module | Responsibility |
 | --- | --- |
 | `cli.py` | argparse front end; maps subcommands to workflow functions |
-| `workflow.py` | the orchestrator: planning, the render loop, test gates, checkpoints |
+| `workflow/` | the orchestrator package (see below): planning, the render loop, test gates, checkpoints, and every non-render command |
 | `specs.py` | parse and validate `*.mint.md` into a `Spec` IR |
 | `config.py` | parse `mint.yaml` (a tiny YAML subset) |
 | `modgraph.py` | resolve `requires` into a topological render order |
@@ -18,6 +18,28 @@ All code lives under `src/mint_cli/`.
 | `test_quality.py` | anti-weak-test gate: coverage, traceability, mutation probe |
 | `renderer/` | pluggable renderer adapters + the file-patch contract |
 | `errors.py` | `MintError`, the single user-facing error type |
+
+### The `workflow/` package
+
+`mint_cli.workflow` re-exports every function the CLI and tests use, so callers
+import from the package; the implementation is split by concern:
+
+| Module | Responsibility |
+| --- | --- |
+| `context.py` | `ModuleContext`, config/spec/metadata loading, renderer payload builders, prompt-size cap |
+| `planning.py` | `determine_render_plan`: which unit range a render touches and why |
+| `engine.py` | the render loop: unit/conformance phases, style-lock gate, retries, budgets, commits |
+| `stylelock.py` | style-lock violation detection and the feedback it produces |
+| `interface.py` | public stubs, literal warnings, interface-change detection for dependents |
+| `scaffold.py` | `mint init` / `mint new` templates and writers |
+| `lint.py` | `mint lint` spec heuristics |
+| `health.py` | `mint doctor`, `healthcheck`, `next`, `status` |
+| `reports.py` | run reports, attempt manifests, `mint report` / `inspect` |
+| `maintenance.py` | `mint clean` / `drift` / `prune` |
+
+Dependencies point one way: `engine` imports the other modules and nothing imports
+`engine`. `health` and `maintenance` get the render plan from `planning`, not from
+the engine.
 
 ## The render loop (per module)
 

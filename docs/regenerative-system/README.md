@@ -23,6 +23,7 @@ For the repo landing page and quickstart, see [`../../README.md`](../../README.m
 | [module-graph.md](module-graph.md) | `imports`, `requires`, ordering, cascades |
 | [metadata-and-checkpoints.md](metadata-and-checkpoints.md) | `.mintgen/module.json`, attempts, git checkpoints |
 | [commands.md](commands.md) | Every CLI command with examples |
+| [building-an-app.md](building-an-app.md) | From a module graph to a running app: `render --all`, `env`, `run`, `exec` |
 | [known-limits.md](known-limits.md) | What it does not do yet, and the next risks |
 
 ## 60-second tour
@@ -44,6 +45,10 @@ mint render tasklist        # re-renders only from the changed unit
 
 # Edit .mint/specs/taskstore.mint.md (a required module), then:
 mint render tasklist        # re-renders taskstore, then tasklist (its code dep moved)
+
+# Render every spec in the project, then run the result as an app.
+mint render --all
+mint run tasklist --entry tasklist.cli -- add "write the spec"
 
 # Replayed model path, no templates:
 mint render calc-cli        # renders lexer -> parser -> evaluator -> calc-cli

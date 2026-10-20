@@ -928,7 +928,6 @@ def test_typescript_stale_replay_cassette_fails_with_live_smoke_hint(tmp_path):
 # Adapter-level defect regression tests (no full render required)
 # --------------------------------------------------------------------------- #
 
-from mint_cli import stacks
 from mint_cli.stacks import (
     TypeScriptStackAdapter,
     _probe_binary,
@@ -1044,7 +1043,6 @@ def test_ts_mutated_source_offsets_survive_astral_chars():
     # An emoji (astral char, 2 UTF-16 units) in a comment before the body would shift
     # code-point based slicing; the UTF-16 approach must place the throw correctly.
     source = 'export function f(): number {\n  // \U0001F600 comment\n  return 1;\n}\n'
-    units = source.encode("utf-16-le")
     open_brace = source.index("{")
     close_brace = source.rindex("}")
     # Offsets are UTF-16 code units, matching what the TS compiler emits.

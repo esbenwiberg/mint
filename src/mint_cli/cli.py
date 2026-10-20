@@ -6,10 +6,13 @@ import sys
 
 from . import __version__
 from .errors import MintError
+from . import progress
 from .workflow import (
     clean_module,
     doctor_project,
     drift_module,
+    exec_in_app,
+    format_environment,
     healthcheck_module,
     init_project,
     inspect_unit,
@@ -19,8 +22,11 @@ from .workflow import (
     next_module,
     parse_module,
     prune_project,
+    render_all,
     report_module,
     render_module,
+    resolve_app_environment,
+    run_app,
     status_module,
 )
 from .stacks import known_stacks
@@ -128,11 +134,60 @@ def build_parser() -> argparse.ArgumentParser:
         "render",
         help="render functional units",
     )
-    render_parser.add_argument("module", help="module name, for example: example")
+    render_target = render_parser.add_mutually_exclusive_group(required=True)
+    render_target.add_argument("module", nargs="?", help="module name, for example: example")
+    render_target.add_argument(
+        "--all",
+        action="store_true",
+        help="render every spec in the project in dependency order",
+    )
     render_parser.add_argument("--from", dest="from_unit", metavar="FRN")
     render_parser.add_argument("--range", dest="unit_range", metavar="FRN:FRM")
     render_parser.add_argument("--force", action="store_true")
     render_parser.set_defaults(handler=handle_render)
+
+    env_parser = subparsers.add_parser(
+        "env",
+        help="print the environment that runs a rendered module graph as an app",
+    )
+    env_parser.add_argument("module", help="module name, for example: timesheet-cli")
+    env_parser.add_argument(
+        "--format",
+        choices=("shell", "json", "path"),
+        default="shell",
+        help="shell exports (default), JSON, or the bare PYTHONPATH",
+    )
+    env_parser.set_defaults(handler=handle_env)
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="run a rendered module's entrypoint with its graph on PYTHONPATH",
+    )
+    run_parser.add_argument("module", help="module name, for example: timesheet-cli")
+    run_parser.add_argument(
+        "--entry",
+        dest="entrypoint",
+        metavar="DOTTED",
+        help="dotted module for python -m (overrides the spec's entrypoint key)",
+    )
+    run_parser.add_argument(
+        "args",
+        nargs="*",
+        help="arguments for the app; everything after -- is passed through verbatim",
+    )
+    run_parser.set_defaults(handler=handle_run)
+
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="run any command inside a rendered module graph's environment",
+    )
+    exec_parser.add_argument("module", help="module name, for example: timesheet-web")
+    exec_parser.add_argument(
+        "command",
+        nargs="*",
+        help="the command; everything after -- is passed through verbatim",
+    )
+    exec_parser.set_defaults(handler=handle_exec)
 
     live_smoke_parser = subparsers.add_parser(
         "live-smoke",
@@ -254,6 +309,14 @@ def handle_report(args: argparse.Namespace) -> int:
 
 
 def handle_render(args: argparse.Namespace) -> int:
+    progress.reset_clock()
+    if args.all:
+        if args.from_unit or args.unit_range:
+            print("ERROR: --from/--range need a single module, not --all", file=sys.stderr)
+            return 2
+        status, output = render_all(force=args.force)
+        print(output, end="")
+        return status
     status, output = render_module(
         args.module,
         from_unit=args.from_unit,
@@ -262,6 +325,33 @@ def handle_render(args: argparse.Namespace) -> int:
     )
     print(output, end="")
     return status
+
+
+def handle_env(args: argparse.Namespace) -> int:
+    print(format_environment(resolve_app_environment(args.module), args.format), end="")
+    return 0
+
+
+def handle_run(args: argparse.Namespace) -> int:
+    return run_app(args.module, [*args.args, *args.passthrough], entrypoint=args.entrypoint)
+
+
+def handle_exec(args: argparse.Namespace) -> int:
+    return exec_in_app(args.module, [*args.command, *args.passthrough])
+
+
+PASSTHROUGH_COMMANDS = ("run", "exec")
+
+
+def split_passthrough(argv: Sequence[str]) -> tuple[list[str], list[str]]:
+    """For ``mint run``/``mint exec``, everything after the first ``--`` belongs to
+    the child command verbatim (argparse would otherwise claim flags like
+    ``--help`` or ``--port`` for itself)."""
+    argv = list(argv)
+    if argv and argv[0] in PASSTHROUGH_COMMANDS and "--" in argv:
+        separator = argv.index("--")
+        return argv[:separator], argv[separator + 1 :]
+    return argv, []
 
 
 def handle_live_smoke(args: argparse.Namespace) -> int:
@@ -290,7 +380,9 @@ def handle_prune(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    own, passthrough = split_passthrough(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(own)
+    args.passthrough = passthrough
 
     if not hasattr(args, "handler"):
         parser.print_help()

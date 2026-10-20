@@ -12,6 +12,7 @@ from .hashing import hash_json
 
 UNIT_ID_RE = re.compile(r"^FR[0-9]+$")
 MODULE_REF_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+ENTRYPOINT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 # A class prefix must end in a separator so "ts-" cannot accidentally match "table".
 STYLE_LOCK_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*-$")
 
@@ -78,6 +79,10 @@ class Spec:
     test: list[str]
     functional_units: list[FunctionalUnit]
     style_lock: StyleLock | None = None
+    # Runtime wiring for `mint run`: the dotted module `python -m` executes.
+    # Deliberately absent from to_ir(): it is not part of the render contract, so
+    # adding it to a spec never changes a hash or invalidates a cassette.
+    entrypoint: str | None = None
 
     def to_ir(self) -> dict[str, Any]:
         ir: dict[str, Any] = {
@@ -161,6 +166,8 @@ def parse_spec_file(path: Path) -> Spec:
         renderer_model = str(model_raw) if model_raw not in (None, "") else None
         prompt_raw = metadata.get("rendererPromptVersion")
         renderer_prompt_version = str(prompt_raw) if prompt_raw not in (None, "") else None
+        entrypoint_raw = metadata.get("entrypoint")
+        entrypoint = str(entrypoint_raw) if entrypoint_raw not in (None, "") else None
     except KeyError as exc:
         raise MintError(f"Missing required spec frontmatter key in {path}: {exc.args[0]}") from exc
 
@@ -176,6 +183,11 @@ def parse_spec_file(path: Path) -> Spec:
     validate_module_refs(path, imports, "imports")
     validate_module_refs(path, requires, "requires")
     style_lock = parse_style_lock(metadata.get("styleLock"), path, requires)
+    if entrypoint is not None and not ENTRYPOINT_RE.match(entrypoint):
+        raise MintError(
+            f"Invalid entrypoint '{entrypoint}' in {path}: use a dotted Python module "
+            "name that `python -m` can run, like timesheet_cli or tasklist.cli."
+        )
 
     # Specs must be named <module>.mint.md; anchoring on the full suffix keeps
     # the extension from leaking into the module name (e.g. file bar.md with
@@ -204,6 +216,7 @@ def parse_spec_file(path: Path) -> Spec:
         test=test,
         functional_units=functional_units,
         style_lock=style_lock,
+        entrypoint=entrypoint,
     )
 
 
