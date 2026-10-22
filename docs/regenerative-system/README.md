@@ -6,9 +6,154 @@ unit at a time, and re-renders only the slices affected when a spec or a depende
 changes.
 
 This directory documents the system as built. It supersedes `docs/regenerative-mvp/`
-(kept for history).
+(kept for history). For the repo landing page and quickstart, see
+[`../../README.md`](../../README.md). This page walks the mechanism in the order it
+runs; each section links to the document that covers it in depth.
 
-For the repo landing page and quickstart, see [`../../README.md`](../../README.md).
+## 1. The spec is Markdown with a contract
+
+One file per module, `<module>.mint.md`, under `.mint/specs/`. YAML frontmatter
+picks the stack and the renderer. Four `##` sections are mandatory:
+`definitions`, `implementation`, `test`, and `functional`. The functional section
+is a list of units (`FR1`, `FR2`, ...) with a title, spec bullets, and acceptance
+bullets. Ids are unique and strictly ascending, because the order is the render
+order.
+
+Every part of the spec is hashed, and which hash a part feeds decides the blast
+radius of editing it:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="figures/spec-hashes-dark.svg">
+  <img alt="Spec sections feed three hashes: the non-functional sections feed a hash that triggers a full re-render, each functional unit feeds its own text hash that re-renders from that unit, and required modules' public interface feeds a hash that also triggers a full re-render." src="figures/spec-hashes-light.svg">
+</picture>
+
+`mint lint <module>` rejects specs that will render badly: vague terms, acceptance
+bullets with no testable assertion, thresholds without a stated boundary.
+
+Read: [spec-format.md](spec-format.md), [`../spec-authoring.md`](../spec-authoring.md).
+
+## 2. Every unit goes through the same loop
+
+For each unit in the render plan, `mint` builds a prompt from the spec, the
+imported vocabulary, the required modules' public interface, and everything
+rendered so far. The renderer answers with a file patch. `mint` applies it and runs
+the gates in order, cheapest first. A failed gate feeds its output back into the
+prompt for exactly one retry; a second failure fails the render.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="figures/render-loop-dark.svg">
+  <img alt="Render loop for one unit: prompt, renderer, file patch, style lock, unit gate, conformance gate, test-quality gate, git checkpoint. Invalid patches and failed gates feed back to the renderer for one retry." src="figures/render-loop-light.svg">
+</picture>
+
+- **Style lock** (only if the spec declares it) scans generated `src/` before any
+  test runs, so a violation never costs a test run.
+- **Unit gate** runs the tests the renderer wrote for its own code.
+- **Conformance gate** runs the tests derived from acceptance, plus every prior
+  unit's conformance tests as regression.
+- **Test-quality gate** is covered in section 6.
+- **Checkpoint** lands the unit as two commits (code, then metadata) in the
+  module's nested git repo under `.mint/generated/<module>/`.
+
+Read: [architecture.md](architecture.md), [metadata-and-checkpoints.md](metadata-and-checkpoints.md),
+[cost-and-budgets.md](cost-and-budgets.md).
+
+## 3. Renderers emit a patch, never a write
+
+Deterministic templates and language models produce the same artifact: a JSON
+list of file operations with `path`, `action` (`write` or `delete`), `root`
+(`module` or `conformance`), and `contents`. Validation rejects absolute paths,
+`..` segments, the module root itself, and reserved first components such as
+`.git` and `.mintgen`. Applying is two-pass: every target is resolved and
+checked for containment before anything is written, so a bad patch leaves the
+tree untouched. Malformed or oversized responses are classified `patch_invalid`
+and fed back like a failing test.
+
+Read: [renderer-contract.md](renderer-contract.md).
+
+## 4. Only the changed slice is re-rendered
+
+`mint render` with nothing changed is a no-op. With a changed unit, the planner
+compares stored hashes in `.mintgen/module.json` against the current spec and
+returns a unit range; the generated repo is reset to the commit before that
+range, the conformance tests for those units are dropped, and rendering resumes
+from there. A required module whose public interface changed rebuilds its
+dependents from `FR1`.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="figures/incremental-render-dark.svg">
+  <img alt="Two cases: editing FR3 of tasklist keeps FR1 and FR2 and re-renders FR3 and FR4; editing the required taskstore module re-renders taskstore and then every unit of tasklist." src="figures/incremental-render-light.svg">
+</picture>
+
+Multi-module renders resolve `requires` into a topological order and run the
+loop per module, required modules first. Only the named module honours `--from`,
+`--range`, and `--force`.
+
+Read: [module-graph.md](module-graph.md), [building-an-app.md](building-an-app.md).
+
+## 5. Models are recorded once and replayed
+
+A live model call is not reproducible, so `mint` never makes one by default.
+Every model response is a cassette under `resources/cassettes/v1/`, keyed by a
+hash of the prompt version, module, unit, phase, attempt, model id, and the full
+prompt text. Ordinary renders replay; recording happens only behind
+`MINT_LIVE=1`, and CI never sets it. A missing or stale cassette is a hard error
+with a re-record hint, never a silent fallback.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="figures/record-replay-dark.svg">
+  <img alt="Replay path: the render loop hashes the prompt into a cassette id and reads the cassette; a missing or stale cassette fails loudly. Record path with MINT_LIVE=1: a RecordingClient wraps the live provider, which runs the claude CLI in an empty scratch directory, and writes a new cassette." src="figures/record-replay-light.svg">
+</picture>
+
+CLI providers run in an empty scratch directory, never the project, so the only
+way model output reaches disk is through the validated patch.
+
+Read: [record-replay.md](record-replay.md), [release-and-ci.md](release-and-ci.md).
+
+## 6. Tests have to prove they can fail
+
+A model asked to write code and tests together will write tests that pass by
+construction. The test-quality gate runs after unit and conformance pass (deferred
+to the final unit for multi-unit modules) and requires a coverage floor,
+acceptance traceability (every acceptance bullet maps to a conformance test), and
+a coverage-guided mutation probe.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="figures/mutation-probe-dark.svg">
+  <img alt="Mutation probe: a covered line of generated source is mutated, the tests re-run, and the mutant must be killed by a failing test; a surviving mutant means weak tests." src="figures/mutation-probe-light.svg">
+</picture>
+
+Read: [test-quality.md](test-quality.md), [typescript.md](typescript.md).
+
+## 7. Mint renders parts of mint
+
+Two components are self-hosted and checked for parity against their handwritten
+originals on every test run: `mint-hashing` (a hand-authored replay cassette)
+and `mint-patch`, the patch contract from section 3, rendered live by
+`claude-fable-5-1` through the `claude-cli` provider.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="figures/self-hosting-parity-dark.svg">
+  <img alt="Parity harness: the mint-patch spec is rendered into a generated package; the same raw patch is applied by the generated code and by the handwritten module to twin directories, and outcomes and tree snapshots are compared for equality." src="figures/self-hosting-parity-light.svg">
+</picture>
+
+The experiment also found an acceptance gap: a second live render passed every
+gate but handled delete containment differently, because that rule lived only in
+`## implementation`. It is now pinned in `FR3` acceptance. Anything a consumer
+relies on belongs in acceptance, because that is the only part of the spec a gate
+can enforce.
+
+Read: [commands.md](commands.md) (self-hosting proof section),
+[known-limits.md](known-limits.md) (risk 1).
+
+## 8. What it does not do yet
+
+One retry per phase, hash-based change detection, manual live recording,
+Python-only app composition, run-everything conformance regression, single
+writer per module graph.
+
+Read: [known-limits.md](known-limits.md).
+
+## Reference
 
 | Doc | What it covers |
 | --- | --- |
@@ -25,6 +170,9 @@ For the repo landing page and quickstart, see [`../../README.md`](../../README.m
 | [commands.md](commands.md) | Every CLI command with examples |
 | [building-an-app.md](building-an-app.md) | From a module graph to a running app: `render --all`, `env`, `run`, `exec` |
 | [known-limits.md](known-limits.md) | What it does not do yet, and the next risks |
+
+The figures under `figures/` are the same drawings in light and dark variants;
+each `<picture>` above picks one by the viewer's colour scheme.
 
 ## 60-second tour
 

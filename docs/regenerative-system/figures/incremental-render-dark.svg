@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="290" color="#e6ede8" viewBox="0 0 760 290" role="img" aria-label="Two cases side by side. Left: editing FR3 of tasklist keeps FR1 and FR2, resets the generated repo to the commit before FR3, and re-renders FR3 and FR4. Right: editing the required taskstore module re-renders taskstore from FR1 and then re-renders every unit of tasklist.">
+<style>
+  :root { --bg:#101613; --fg:#e6ede8; --muted:#9bab9f; --accent:#4fd39b; --accent-soft:#163626; --warn:#f0a265; --warn-soft:#3a2415; --kept:#3b4a42; }
+  text { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px; fill: var(--fg); }
+  text.m { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }
+  text.t { font-weight: 700; font-size: 13px; }
+  text.s { font-size: 11px; fill: var(--muted); }
+  text.acc { fill: var(--accent); font-weight: 600; }
+  text.warn { fill: var(--warn); font-weight: 600; }
+  .box { fill: var(--bg); stroke: var(--fg); stroke-width: 1.2; }
+  .box.acc { fill: var(--accent-soft); stroke: var(--accent); }
+  .box.kept { fill: var(--kept); stroke: var(--kept); }
+  .box.warn { fill: var(--warn-soft); stroke: var(--warn); }
+  .ln { stroke: var(--fg); stroke-width: 1.2; fill: none; }
+  .ln.acc { stroke: var(--accent); stroke-width: 1.6; }
+  .ln.dash { stroke-dasharray: 4 3; }
+  .ln.warn { stroke: var(--warn); }
+</style>
+<rect width="100%" height="100%" fill="#182119" rx="8"/>
+        <defs>
+          <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4fd39b"/></marker>
+        </defs>
+        <!-- left panel -->
+        <text x="20" y="28" class="t">A &#183; edit FR3 in tasklist.mint.md</text>
+        <text x="20" y="62" class="m">tasklist</text>
+        <rect x="90" y="46" width="60" height="26" rx="4" class="box kept"/><text x="120" y="63" text-anchor="middle" class="m">FR1</text>
+        <rect x="158" y="46" width="60" height="26" rx="4" class="box kept"/><text x="188" y="63" text-anchor="middle" class="m">FR2</text>
+        <rect x="226" y="46" width="60" height="26" rx="4" class="box acc"/><text x="256" y="63" text-anchor="middle" class="m">FR3</text>
+        <rect x="294" y="46" width="60" height="26" rx="4" class="box acc"/><text x="324" y="63" text-anchor="middle" class="m">FR4</text>
+        <path d="M222 90 L222 76" class="ln acc" marker-end="url(#ah3)"/>
+        <text x="222" y="104" text-anchor="middle" class="s">git reset --hard to FR3's beforeCommit</text>
+        <text x="222" y="118" text-anchor="middle" class="s">drop conformance/FR3, FR4 &#183; render FR3 &#8594; FR4</text>
+        <text x="20" y="150" class="m">taskstore</text>
+        <rect x="90" y="134" width="60" height="26" rx="4" class="box kept"/><text x="120" y="151" text-anchor="middle" class="m">FR1</text>
+        <rect x="158" y="134" width="60" height="26" rx="4" class="box kept"/><text x="188" y="151" text-anchor="middle" class="m">FR2</text>
+        <text x="226" y="151" class="s">untouched: spec unchanged</text>
+
+        <!-- divider -->
+        <line x1="380" y1="20" x2="380" y2="270" class="ln dash"/>
+
+        <!-- right panel -->
+        <text x="400" y="28" class="t">B &#183; edit taskstore.mint.md (required)</text>
+        <text x="400" y="62" class="m">taskstore</text>
+        <rect x="470" y="46" width="60" height="26" rx="4" class="box acc"/><text x="500" y="63" text-anchor="middle" class="m">FR1</text>
+        <rect x="538" y="46" width="60" height="26" rx="4" class="box acc"/><text x="568" y="63" text-anchor="middle" class="m">FR2</text>
+        <text x="610" y="63" class="s">rendered first</text>
+        <path d="M500 76 C 500 110, 500 110, 500 128" class="ln acc" marker-end="url(#ah3)"/>
+        <text x="512" y="106" class="s">requiredModuleCodeHash moved</text>
+        <text x="400" y="150" class="m">tasklist</text>
+        <rect x="470" y="134" width="60" height="26" rx="4" class="box acc"/><text x="500" y="151" text-anchor="middle" class="m">FR1</text>
+        <rect x="538" y="134" width="60" height="26" rx="4" class="box acc"/><text x="568" y="151" text-anchor="middle" class="m">FR2</text>
+        <rect x="606" y="134" width="60" height="26" rx="4" class="box acc"/><text x="636" y="151" text-anchor="middle" class="m">FR3</text>
+        <rect x="674" y="134" width="60" height="26" rx="4" class="box acc"/><text x="704" y="151" text-anchor="middle" class="m">FR4</text>
+        <text x="470" y="184" class="s">rebuilt from FR1: every unit may have</text>
+        <text x="470" y="198" class="s">compiled against the old interface</text>
+        <text x="400" y="236" class="s">An internal-only change in taskstore that keeps its</text>
+        <text x="400" y="250" class="s">public interface does not cascade. Use --force when</text>
+        <text x="400" y="264" class="s">upstream semantics changed behind a stable surface.</text>
+
+        <!-- legend -->
+        <rect x="20" y="236" width="14" height="14" rx="2" class="box kept"/><text x="40" y="248" class="s">kept</text>
+        <rect x="80" y="236" width="14" height="14" rx="2" class="box acc"/><text x="100" y="248" class="s">re-rendered</text>
+      </svg>
