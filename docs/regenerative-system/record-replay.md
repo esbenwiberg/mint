@@ -15,8 +15,9 @@ resources/cassettes/v1/<cassette-id>.json
 The calc demo commits twelve replay cassettes: five for the clean graph render,
 one for the edited-evaluator slice proof, five for the interface-changing
 edited-lexer cascade proof, and one for the internal-only lexer edit that must
-NOT cascade. The self-hosting proof adds one cassette for `mint-hashing` FR1, so
-`mint doctor` should report thirteen replay cassettes in this repository.
+NOT cascade. The self-hosting proofs add one cassette for `mint-hashing` FR1 and
+four for `mint-patch` (FR1, FR2 attempts 1 and 2, FR3), so `mint doctor` should
+report seventeen replay cassettes in this repository.
 
 These cassettes are generated, not hand-maintained. Any change to prompt
 construction (system prompt, `build_prompt`, prompt hints, required-module

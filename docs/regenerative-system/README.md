@@ -53,6 +53,7 @@ mint run tasklist --entry tasklist.cli -- add "write the spec"
 # Replayed model path, no templates:
 mint render calc-cli        # renders lexer -> parser -> evaluator -> calc-cli
 mint render mint-hashing    # renders a mint hashing component via replay
+mint render mint-patch      # renders mint's own patch contract, recorded by claude-fable-5-1
 
 # New arbitrary specs opt into the model renderer:
 mint new notes --renderer claude-cli --model sonnet --prompt-version notes-v1
@@ -67,8 +68,9 @@ mint new calc-ts --stack typescript-lib --renderer codex-cli \
 Ordinary renders run offline. The default renderer is deterministic; the
 model-backed renderer replays local cassettes by default and records live responses
 only behind `MINT_LIVE=1`. The replay fixtures include both the calculator graph
-and a self-hosted `mint-hashing` component checked for parity with
-`mint_cli.hashing`.
+and two self-hosted components checked for parity with their handwritten
+originals: `mint-hashing` against `mint_cli.hashing` and `mint-patch` against
+`mint_cli.renderer.patch`.
 
 ## Current Gates
 

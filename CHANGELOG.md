@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Second self-hosting proof: `.mint/specs/mint-patch.mint.md` renders mint's
+  renderer patch contract (`validate_patch`, `apply_patch`, path and symlink
+  hardening) and `tests/test_self_hosting.py` checks the generated package
+  against `mint_cli.renderer.patch` entry by entry. Unlike `mint-hashing`, its
+  cassettes are real recordings (`claude-fable-5-1` via `claude-cli`): two of
+  three units passed first shot, one needed a unit retry. A second independent
+  render exposed an acceptance gap (delete containment through a symlink), now
+  pinned in FR3 acceptance and covered by the parity tests.
 - Build an app from specs: `mint run <module> -- args` runs a rendered module
   graph (generated `src/` dirs plus module-local `.mint-deps` on `PYTHONPATH`,
   `python -m <entrypoint>`), `mint exec <module> -- cmd` runs any command in
