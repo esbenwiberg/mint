@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Generated tests run in a hermetic environment: CI-detection and colour
+  variables are stripped and the terminal width pinned, so retry-feedback
+  cassettes recorded locally replay byte-identically in CI (pytest reshapes its
+  summary when `CI` is set).
 - Second self-hosting proof: `.mint/specs/mint-patch.mint.md` renders mint's
   renderer patch contract (`validate_patch`, `apply_patch`, path and symlink
   hardening) and `tests/test_self_hosting.py` checks the generated package

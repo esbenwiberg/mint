@@ -880,7 +880,7 @@ class TypeScriptStackAdapter:
         return result
 
     def script_env(self, context: Any, required_paths: list[Path]) -> dict[str, str]:
-        env = os.environ.copy()
+        env = hermetic_test_env(os.environ.copy())
         env["MINT_GENERATED_DIR"] = str(context.generated_dir)
         env["MINT_CONFORMANCE_DIR"] = str(context.conformance_dir)
         if required_paths:
@@ -1521,6 +1521,33 @@ def known_stacks() -> list[str]:
     return sorted(name for adapter in _ADAPTERS for name in adapter.stack_names)
 
 
+# Environment variables that change test-runner *output* without changing test
+# results. pytest widens its short summary and stops truncating assertion output
+# when CI or BUILD_NUMBER is set; Vitest switches reporters on CI; FORCE_COLOR and
+# PY_COLORS inject ANSI escapes; PYTEST_ADDOPTS lets the caller's shell alter the
+# generated run. Test output is fed back into retry prompts and hashed into
+# cassette ids, so a recording made on a laptop must replay byte-identically in
+# CI and vice versa.
+_OUTPUT_SHAPING_ENV = (
+    "CI",
+    "BUILD_NUMBER",
+    "GITHUB_ACTIONS",
+    "FORCE_COLOR",
+    "PY_COLORS",
+    "PYTEST_ADDOPTS",
+)
+_HERMETIC_TEST_COLUMNS = "80"
+
+
+def hermetic_test_env(env: dict[str, str]) -> dict[str, str]:
+    """Pin the parts of ``env`` that shape test-runner output; see ``_OUTPUT_SHAPING_ENV``."""
+    for name in _OUTPUT_SHAPING_ENV:
+        env.pop(name, None)
+    env["COLUMNS"] = _HERMETIC_TEST_COLUMNS
+    env["NO_COLOR"] = "1"
+    return env
+
+
 def script_env(context: Any, required_paths: list[Path]) -> dict[str, str]:
     """Canonical environment for running Python project scripts and the coverage
     trace. Public so the render engine (workflow/engine.py) can import it instead of keeping
@@ -1540,7 +1567,7 @@ def script_env(context: Any, required_paths: list[Path]) -> dict[str, str]:
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["MINT_SKIP_PYTEST_VERSION_CHECK"] = "1"
     env.setdefault("PYTHON_BIN", sys.executable)
-    return env
+    return hermetic_test_env(env)
 
 
 def _run_project_script(

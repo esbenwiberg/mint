@@ -236,3 +236,33 @@ def test_script_env_without_deps_dir_matches_previous_shape(tmp_path):
     context = make_context(tmp_path)
     env = script_env(context, [])
     assert "MINT_REQUIRED_SRC" not in env
+
+
+def test_script_env_is_hermetic_against_ci_output_shaping(tmp_path, monkeypatch):
+    """pytest widens its summary and stops truncating under CI/BUILD_NUMBER; that
+    output is hashed into retry cassette ids, so the generated run must not see it."""
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("BUILD_NUMBER", "42")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("PY_COLORS", "1")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-vv")
+    monkeypatch.setenv("COLUMNS", "213")
+
+    env = script_env(make_context(tmp_path), [])
+
+    for name in ("CI", "BUILD_NUMBER", "GITHUB_ACTIONS", "FORCE_COLOR", "PY_COLORS", "PYTEST_ADDOPTS"):
+        assert name not in env
+    assert env["COLUMNS"] == "80"
+    assert env["NO_COLOR"] == "1"
+
+
+def test_typescript_script_env_is_hermetic_against_ci_output_shaping(tmp_path, monkeypatch):
+    from mint_cli.stacks import TypeScriptStackAdapter
+
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    env = TypeScriptStackAdapter().script_env(make_context(tmp_path), [])
+    assert "CI" not in env
+    assert "FORCE_COLOR" not in env
+    assert env["COLUMNS"] == "80"

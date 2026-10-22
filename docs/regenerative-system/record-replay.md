@@ -112,6 +112,18 @@ override command must read the render prompt from stdin and write the raw model
 response to stdout. Every CLI command runs in an empty scratch directory, not
 the project — stray file writes from an agentic CLI can never land in the repo.
 
+### Retry feedback must replay everywhere
+
+A retry prompt embeds the previous attempt's test output, and that prompt is
+hashed into the cassette id. `normalize_feedback` scrubs durations, paths,
+timestamps, and header lines, and the stack adapters run generated tests in a
+hermetic environment: `CI`, `BUILD_NUMBER`, `GITHUB_ACTIONS`, `FORCE_COLOR`,
+`PY_COLORS`, and `PYTEST_ADDOPTS` are removed, `COLUMNS` is pinned to 80, and
+`NO_COLOR` is set. Without that, pytest widens its short summary and stops
+truncating assertions whenever `CI` is set, so a retry cassette recorded on a
+laptop replayed as "stale" in GitHub Actions. The first retry cassette in the
+repo (`mint-patch` FR2) found this.
+
 ## Attempt manifests
 
 Every model render attempt records its cassette id in:
