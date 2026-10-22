@@ -10,8 +10,9 @@ What this system deliberately does *not* do yet, and where it would bite first.
   free-form specs are the model renderer's job.
 - **Live recording remains manual.** The model path has record/replay cassettes,
   the calc graph proves offline replay for a non-trivial template-free project, and
-  `mint-hashing` proves a small self-hosted mint component, but CI still should not
-  call the live provider. Real model nondeterminism remains isolated behind
+  `mint-hashing` and `mint-patch` prove self-hosted mint components (the latter
+  recorded live by `claude-fable-5-1`), but CI still should not call the live
+  provider. Real model nondeterminism remains isolated behind
   `MINT_LIVE=1`.
 - **One retry per phase.** Unit and conformance each get a single feedback-driven
   retry. Deeper failures fail the render; there is no escalation or human-in-the-loop.
@@ -66,6 +67,11 @@ What this system deliberately does *not* do yet, and where it would bite first.
 1. **Model output trust.** Patch schema failures and oversized responses now feed
    back through retries, and the test-quality gate catches shallow tests. A model can
    still write plausible-wrong code that passes a stronger-but-incomplete suite.
+   Concretely: two live `mint-patch` renders both passed every gate, yet one
+   resolved delete targets before the containment check and the other did not,
+   because that bullet lived only in `## implementation` and no acceptance
+   criterion exercised it (it does now). Anything the consumer relies on belongs
+   in acceptance.
 2. **Cache/staleness traps.** We already disable bytecode writes because same-second,
    same-size regeneration served stale `.pyc` (a real bug found in development). Other
    stateful caches (import caches in long-lived processes, build artifacts, lockfiles)

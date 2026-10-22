@@ -424,10 +424,37 @@ The specs live at `.mint/specs/lexer.mint.md`, `.mint/specs/parser.mint.md`,
 
 ## Self-hosting proof
 
-`.mint/specs/mint-hashing.mint.md` renders a model-backed implementation of the hashing
-helpers into `.mint/generated/mint-hashing/`. The test suite compares that generated
-package against the handwritten `mint_cli.hashing` behavior.
+Two specs render mint components from mint itself; `tests/test_self_hosting.py`
+replays them and checks the generated package against the handwritten module.
+
+- `.mint/specs/mint-hashing.mint.md` renders the hashing helpers into
+  `.mint/generated/mint-hashing/` and compares them with `mint_cli.hashing`. Its
+  single cassette is a hand-authored replay fixture, not a live recording.
+- `.mint/specs/mint-patch.mint.md` renders the renderer patch contract
+  (`validate_patch`, `apply_patch`, path hardening) into
+  `.mint/generated/mint-patch/` and compares it with `mint_cli.renderer.patch`
+  across structural rejections, path escapes, symlink containment, and deletes.
+  Its four cassettes were recorded live by `claude-fable-5-1` through the
+  `claude-cli` provider: FR1 and FR3 passed first shot, FR2 needed one unit
+  retry because its own generated unit test asserted a message wording the
+  implementation did not emit. The final unit cleared the test-quality gate
+  with 97 percent coverage and no mutation survivors.
+
+  A second, independent live render of the same spec (not committed) also
+  passed every gate, again retrying FR2 once for the same test-versus-message
+  reason. Its public surface matched the handwritten module on every
+  `validate_patch` case and constant, but its internal layout differed (three
+  private modules instead of one file) and it read one ambiguous bullet the
+  other way: it checked delete containment on the symlink's parent rather than
+  on the fully resolved target, so a `delete` of a symlink pointing outside the
+  root unlinked the link instead of raising. No acceptance criterion pinned that
+  case, so the gates could not tell the two readings apart. FR3's acceptance now
+  pins both the escaping-symlink delete and the root-itself delete; the
+  re-recorded FR3 passed first shot and the parity suite covers the case. Pin
+  such behaviour in acceptance when parity matters; the implementation section
+  alone is advice to the model, not a check.
 
 ```bash
 mint render mint-hashing
+mint render mint-patch
 ```

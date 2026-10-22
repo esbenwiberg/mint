@@ -15,8 +15,9 @@ resources/cassettes/v1/<cassette-id>.json
 The calc demo commits twelve replay cassettes: five for the clean graph render,
 one for the edited-evaluator slice proof, five for the interface-changing
 edited-lexer cascade proof, and one for the internal-only lexer edit that must
-NOT cascade. The self-hosting proof adds one cassette for `mint-hashing` FR1, so
-`mint doctor` should report thirteen replay cassettes in this repository.
+NOT cascade. The self-hosting proofs add one cassette for `mint-hashing` FR1 and
+four for `mint-patch` (FR1, FR2 attempts 1 and 2, FR3), so `mint doctor` should
+report seventeen replay cassettes in this repository.
 
 These cassettes are generated, not hand-maintained. Any change to prompt
 construction (system prompt, `build_prompt`, prompt hints, required-module
@@ -110,6 +111,18 @@ Override them with `MINT_CLAUDE_CLI_COMMAND` or `MINT_CODEX_CLI_COMMAND`. The
 override command must read the render prompt from stdin and write the raw model
 response to stdout. Every CLI command runs in an empty scratch directory, not
 the project — stray file writes from an agentic CLI can never land in the repo.
+
+### Retry feedback must replay everywhere
+
+A retry prompt embeds the previous attempt's test output, and that prompt is
+hashed into the cassette id. `normalize_feedback` scrubs durations, paths,
+timestamps, and header lines, and the stack adapters run generated tests in a
+hermetic environment: `CI`, `BUILD_NUMBER`, `GITHUB_ACTIONS`, `FORCE_COLOR`,
+`PY_COLORS`, and `PYTEST_ADDOPTS` are removed, `COLUMNS` is pinned to 80, and
+`NO_COLOR` is set. Without that, pytest widens its short summary and stops
+truncating assertions whenever `CI` is set, so a retry cassette recorded on a
+laptop replayed as "stale" in GitHub Actions. The first retry cassette in the
+repo (`mint-patch` FR2) found this.
 
 ## Attempt manifests
 
