@@ -16,6 +16,35 @@ The current v1 system is built around offline, reproducible runs:
 - nested git checkpoints and attempt manifests under `.mint/generated/<module>/.mintgen/`
 - explicit e2e tests for the public CLI workflow
 
+## How It Works
+
+A spec is Markdown with YAML frontmatter and four required sections. The
+functional section lists units (`FR1`, `FR2`, ...), and each unit is rendered on
+its own: `mint` builds a prompt from the spec and the required modules' public
+interface, the renderer answers with a validated JSON file patch, and the result
+has to pass a unit gate, a conformance gate, and a test-quality gate before it is
+committed to the module's nested git repo. A failed gate feeds its output back
+for exactly one retry.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/regenerative-system/figures/render-loop-dark.svg">
+  <img alt="Render loop for one unit: prompt, renderer, file patch, style lock, unit gate, conformance gate, test-quality gate, git checkpoint. Invalid patches and failed gates feed back to the renderer for one retry." src="docs/regenerative-system/figures/render-loop-light.svg">
+</picture>
+
+Every part of the spec is hashed, and the hash a part feeds decides how much is
+re-rendered when you edit it. Editing one unit re-renders from that unit
+forward. Editing a required module's public interface re-renders the required
+module and then every unit of each dependent. Nothing changed means no-op.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/regenerative-system/figures/incremental-render-dark.svg">
+  <img alt="Two cases: editing FR3 of tasklist keeps FR1 and FR2 and re-renders FR3 and FR4; editing the required taskstore module re-renders taskstore and then every unit of tasklist." src="docs/regenerative-system/figures/incremental-render-light.svg">
+</picture>
+
+Model responses are recorded once as replay cassettes and replayed by default,
+so ordinary renders and CI need no API key and no network. The full narrative,
+with the remaining figures, is in `docs/regenerative-system/README.md`.
+
 ## Install Mint
 
 Mint is distributed as a Python CLI package. Use Python 3.12 or newer.

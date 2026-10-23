@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="330" color="#17201b" viewBox="0 0 760 330" role="img" aria-label="Replay path: mint render hashes the prompt into a cassette id and reads the cassette; a missing or stale cassette fails loudly with a re-record hint. Record path with MINT_LIVE=1: a RecordingClient wraps the live provider, which runs the claude CLI in an empty scratch directory, and writes the response as a new cassette.">
+<style>
+  :root { --bg:#f7f9f6; --fg:#17201b; --muted:#5b6a62; --accent:#138a60; --accent-soft:#d4efe2; --warn:#b8561b; --warn-soft:#f9e4d4; --kept:#b7c3bb; }
+  text { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px; fill: var(--fg); }
+  text.m { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }
+  text.t { font-weight: 700; font-size: 13px; }
+  text.s { font-size: 11px; fill: var(--muted); }
+  text.acc { fill: var(--accent); font-weight: 600; }
+  text.warn { fill: var(--warn); font-weight: 600; }
+  .box { fill: var(--bg); stroke: var(--fg); stroke-width: 1.2; }
+  .box.acc { fill: var(--accent-soft); stroke: var(--accent); }
+  .box.kept { fill: var(--kept); stroke: var(--kept); }
+  .box.warn { fill: var(--warn-soft); stroke: var(--warn); }
+  .ln { stroke: var(--fg); stroke-width: 1.2; fill: none; }
+  .ln.acc { stroke: var(--accent); stroke-width: 1.6; }
+  .ln.dash { stroke-dasharray: 4 3; }
+  .ln.warn { stroke: var(--warn); }
+</style>
+<rect width="100%" height="100%" fill="#eaf0ec" rx="8"/>
+        <defs>
+          <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#17201b"/></marker>
+          <marker id="ah4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#138a60"/></marker>
+          <marker id="ah4w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#b8561b"/></marker>
+        </defs>
+        <rect x="20" y="130" width="120" height="56" rx="6" class="box"/>
+        <text x="80" y="153" text-anchor="middle" class="t">render loop</text>
+        <text x="80" y="171" text-anchor="middle" class="s">needs a response</text>
+
+        <!-- cassette id -->
+        <rect x="190" y="40" width="200" height="86" rx="6" class="box"/>
+        <text x="200" y="60" class="t">cassette id = sha256 of</text>
+        <text x="200" y="78" class="m">promptVersion &#183; module &#183; unit</text>
+        <text x="200" y="94" class="m">phase &#183; attempt &#183; model id</text>
+        <text x="200" y="110" class="m">full prompt text</text>
+        <path d="M140 150 C 165 150, 165 83, 188 83" class="ln" marker-end="url(#ah4)"/>
+
+        <!-- replay client -->
+        <rect x="190" y="150" width="200" height="50" rx="6" class="box acc"/>
+        <text x="290" y="171" text-anchor="middle" class="t">ReplayClient</text>
+        <text x="290" y="188" text-anchor="middle" class="s">default &#183; no network, no key</text>
+        <path d="M140 175 L188 175" class="ln acc" marker-end="url(#ah4a)"/>
+        <path d="M290 126 L290 148" class="ln" marker-end="url(#ah4)"/>
+
+        <!-- cassette store -->
+        <rect x="470" y="150" width="270" height="50" rx="6" class="box"/>
+        <text x="605" y="171" text-anchor="middle" class="t">resources/cassettes/v1/&lt;id&gt;.json</text>
+        <text x="605" y="188" text-anchor="middle" class="s">model &#183; promptVersion &#183; prompt &#183; response</text>
+        <path d="M390 175 L468 175" class="ln acc" marker-end="url(#ah4a)"/>
+        <text x="429" y="168" text-anchor="middle" class="acc">read</text>
+
+        <!-- stale -->
+        <path d="M290 200 L290 238" class="ln warn dash" marker-end="url(#ah4w)"/>
+        <rect x="190" y="240" width="200" height="56" rx="6" class="box warn"/>
+        <text x="290" y="261" text-anchor="middle" class="warn">missing or stale &#8594; hard error</text>
+        <text x="290" y="279" text-anchor="middle" class="s">"MINT_LIVE=1 mint render &lt;module&gt;"</text>
+
+        <!-- recording path -->
+        <rect x="470" y="240" width="130" height="56" rx="6" class="box"/>
+        <text x="535" y="261" text-anchor="middle" class="t">RecordingClient</text>
+        <text x="535" y="279" text-anchor="middle" class="s">MINT_LIVE=1 only</text>
+        <rect x="620" y="240" width="120" height="56" rx="6" class="box"/>
+        <text x="680" y="261" text-anchor="middle" class="t">live provider</text>
+        <text x="680" y="279" text-anchor="middle" class="s">claude CLI, empty dir</text>
+        <path d="M600 268 L618 268" class="ln" marker-end="url(#ah4)"/>
+        <path d="M390 268 L468 268" class="ln dash" marker-end="url(#ah4)"/>
+        <text x="429" y="261" text-anchor="middle" class="s">re-record</text>
+        <path d="M535 240 L535 202" class="ln" marker-end="url(#ah4)"/>
+        <text x="546" y="224" class="s">writes a new cassette</text>
+      </svg>
