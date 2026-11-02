@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="250" color="#e6ede8" viewBox="0 0 760 250" role="img" aria-label="Parity harness: the mint-patch spec is rendered by Fable into a generated mint_patch package; the same raw patch is applied by the generated code and by the handwritten mint_cli.renderer.patch to twin directories, and the outcomes and directory snapshots are compared for equality.">
+<style>
+  :root { --bg:#101613; --fg:#e6ede8; --muted:#9bab9f; --accent:#4fd39b; --accent-soft:#163626; --warn:#f0a265; --warn-soft:#3a2415; --kept:#3b4a42; }
+  text { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px; fill: var(--fg); }
+  text.m { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }
+  text.t { font-weight: 700; font-size: 13px; }
+  text.s { font-size: 11px; fill: var(--muted); }
+  text.acc { fill: var(--accent); font-weight: 600; }
+  text.warn { fill: var(--warn); font-weight: 600; }
+  .box { fill: var(--bg); stroke: var(--fg); stroke-width: 1.2; }
+  .box.acc { fill: var(--accent-soft); stroke: var(--accent); }
+  .box.kept { fill: var(--kept); stroke: var(--kept); }
+  .box.warn { fill: var(--warn-soft); stroke: var(--warn); }
+  .ln { stroke: var(--fg); stroke-width: 1.2; fill: none; }
+  .ln.acc { stroke: var(--accent); stroke-width: 1.6; }
+  .ln.dash { stroke-dasharray: 4 3; }
+  .ln.warn { stroke: var(--warn); }
+</style>
+<rect width="100%" height="100%" fill="#182119" rx="8"/>
+        <defs>
+          <marker id="ah6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#e6ede8"/></marker>
+          <marker id="ah6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4fd39b"/></marker>
+        </defs>
+        <rect x="20" y="30" width="150" height="50" rx="6" class="box"/>
+        <text x="95" y="51" text-anchor="middle" class="t">mint-patch.mint.md</text>
+        <text x="95" y="68" text-anchor="middle" class="s">FR1 &#183; FR2 &#183; FR3</text>
+        <rect x="210" y="30" width="130" height="50" rx="6" class="box acc"/>
+        <text x="275" y="51" text-anchor="middle" class="t">claude-fable-5-1</text>
+        <text x="275" y="68" text-anchor="middle" class="s">4 cassettes, replayed</text>
+        <path d="M170 55 L208 55" class="ln" marker-end="url(#ah6)"/>
+        <rect x="380" y="30" width="150" height="50" rx="6" class="box acc"/>
+        <text x="455" y="51" text-anchor="middle" class="t">generated mint_patch</text>
+        <text x="455" y="68" text-anchor="middle" class="s">generated package</text>
+        <path d="M340 55 L378 55" class="ln acc" marker-end="url(#ah6a)"/>
+
+        <rect x="380" y="150" width="150" height="50" rx="6" class="box"/>
+        <text x="455" y="171" text-anchor="middle" class="t">handwritten</text>
+        <text x="455" y="188" text-anchor="middle" class="s">mint_cli.renderer.patch</text>
+
+        <rect x="20" y="105" width="150" height="50" rx="6" class="box"/>
+        <text x="95" y="126" text-anchor="middle" class="t">same raw patch</text>
+        <text x="95" y="143" text-anchor="middle" class="s">+ seeded tree with symlinks</text>
+        <path d="M170 125 C 260 125, 330 95, 378 72" class="ln dash" marker-end="url(#ah6)"/>
+        <path d="M170 135 C 250 135, 300 175, 378 170" class="ln dash" marker-end="url(#ah6)"/>
+
+        <rect x="580" y="90" width="160" height="70" rx="6" class="box"/>
+        <text x="660" y="112" text-anchor="middle" class="t">compare</text>
+        <text x="660" y="129" text-anchor="middle" class="s">ok/error outcome equal</text>
+        <text x="660" y="144" text-anchor="middle" class="s">tree snapshots equal</text>
+        <path d="M530 60 C 560 60, 560 110, 578 112" class="ln" marker-end="url(#ah6)"/>
+        <path d="M530 170 C 560 170, 560 140, 578 138" class="ln" marker-end="url(#ah6)"/>
+        <text x="20" y="185" class="s">29 parity tests: 21 validation cases, constants,</text>
+        <text x="20" y="200" class="s">writes and deletes, symlink escape before any write,</text>
+        <text x="20" y="215" class="s">root-itself delete, escaping-symlink delete.</text>
+        <text x="20" y="238" class="s">Error wording may differ; the blamed entry index must not.</text>
+      </svg>

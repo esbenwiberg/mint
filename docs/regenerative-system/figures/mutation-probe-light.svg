@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="150" color="#17201b" viewBox="0 0 620 150" role="img" aria-label="Mutation probe: generated source is mutated on a covered line, the tests re-run, and the mutant must be killed by a failing test; a surviving mutant means the tests did not constrain that code.">
+<style>
+  :root { --bg:#f7f9f6; --fg:#17201b; --muted:#5b6a62; --accent:#138a60; --accent-soft:#d4efe2; --warn:#b8561b; --warn-soft:#f9e4d4; --kept:#b7c3bb; }
+  text { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px; fill: var(--fg); }
+  text.m { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }
+  text.t { font-weight: 700; font-size: 13px; }
+  text.s { font-size: 11px; fill: var(--muted); }
+  text.acc { fill: var(--accent); font-weight: 600; }
+  text.warn { fill: var(--warn); font-weight: 600; }
+  .box { fill: var(--bg); stroke: var(--fg); stroke-width: 1.2; }
+  .box.acc { fill: var(--accent-soft); stroke: var(--accent); }
+  .box.kept { fill: var(--kept); stroke: var(--kept); }
+  .box.warn { fill: var(--warn-soft); stroke: var(--warn); }
+  .ln { stroke: var(--fg); stroke-width: 1.2; fill: none; }
+  .ln.acc { stroke: var(--accent); stroke-width: 1.6; }
+  .ln.dash { stroke-dasharray: 4 3; }
+  .ln.warn { stroke: var(--warn); }
+</style>
+<rect width="100%" height="100%" fill="#eaf0ec" rx="8"/>
+        <defs>
+          <marker id="ah5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#17201b"/></marker>
+        </defs>
+        <rect x="20" y="40" width="115" height="50" rx="6" class="box"/>
+        <text x="77" y="61" text-anchor="middle" class="t">generated src</text>
+        <text x="77" y="78" text-anchor="middle" class="m">if a &lt; b:</text>
+        <path d="M135 65 L183 65" class="ln" marker-end="url(#ah5)"/>
+        <text x="160" y="57" text-anchor="middle" class="s">mutate</text>
+        <rect x="185" y="40" width="115" height="50" rx="6" class="box warn"/>
+        <text x="242" y="61" text-anchor="middle" class="t">mutant</text>
+        <text x="242" y="78" text-anchor="middle" class="m">if a &lt;= b:</text>
+        <path d="M300 65 L358 65" class="ln" marker-end="url(#ah5)"/>
+        <text x="329" y="57" text-anchor="middle" class="s">run tests</text>
+        <rect x="360" y="20" width="240" height="40" rx="6" class="box acc"/>
+        <text x="480" y="45" text-anchor="middle" class="acc">a test fails &#8594; mutant killed &#8594; good</text>
+        <rect x="360" y="72" width="240" height="40" rx="6" class="box warn"/>
+        <text x="480" y="97" text-anchor="middle" class="warn">all tests pass &#8594; survived &#8594; weak tests</text>
+        <text x="20" y="130" class="s">Only covered lines are mutated, so the probe stays cheap and never blames code the tests never reach.</text>
+      </svg>

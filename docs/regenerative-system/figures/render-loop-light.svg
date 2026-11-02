@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" color="#17201b" viewBox="0 0 900 300" role="img" aria-label="Render loop for one unit: prompt to renderer to file patch, which is validated and applied, then style-lock gate, unit tests, conformance tests, test-quality gate, and a git checkpoint. Invalid patches, style-lock failures, and failed unit or conformance tests feed back to the renderer for one retry.">
+<style>
+  :root { --bg:#f7f9f6; --fg:#17201b; --muted:#5b6a62; --accent:#138a60; --accent-soft:#d4efe2; --warn:#b8561b; --warn-soft:#f9e4d4; --kept:#b7c3bb; }
+  text { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px; fill: var(--fg); }
+  text.m { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }
+  text.t { font-weight: 700; font-size: 13px; }
+  text.s { font-size: 11px; fill: var(--muted); }
+  text.acc { fill: var(--accent); font-weight: 600; }
+  text.warn { fill: var(--warn); font-weight: 600; }
+  .box { fill: var(--bg); stroke: var(--fg); stroke-width: 1.2; }
+  .box.acc { fill: var(--accent-soft); stroke: var(--accent); }
+  .box.kept { fill: var(--kept); stroke: var(--kept); }
+  .box.warn { fill: var(--warn-soft); stroke: var(--warn); }
+  .ln { stroke: var(--fg); stroke-width: 1.2; fill: none; }
+  .ln.acc { stroke: var(--accent); stroke-width: 1.6; }
+  .ln.dash { stroke-dasharray: 4 3; }
+  .ln.warn { stroke: var(--warn); }
+</style>
+<rect width="100%" height="100%" fill="#eaf0ec" rx="8"/>
+        <defs>
+          <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#17201b"/></marker>
+          <marker id="ahw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#b8561b"/></marker>
+        <marker id="ahacc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#138a60"/></marker>
+        </defs>
+        <!-- main row y=120..170 -->
+        <rect x="20" y="120" width="90" height="50" rx="6" class="box"/>
+        <text x="65" y="141" text-anchor="middle" class="t">prompt</text>
+        <text x="65" y="158" text-anchor="middle" class="s">spec + context</text>
+
+        <rect x="140" y="120" width="100" height="50" rx="6" class="box acc"/>
+        <text x="190" y="141" text-anchor="middle" class="t">renderer</text>
+        <text x="190" y="158" text-anchor="middle" class="s">model or template</text>
+
+        <rect x="270" y="120" width="100" height="50" rx="6" class="box"/>
+        <text x="320" y="141" text-anchor="middle" class="t">file patch</text>
+        <text x="320" y="158" text-anchor="middle" class="s">validate &#183; apply</text>
+
+        <rect x="400" y="120" width="90" height="50" rx="6" class="box"/>
+        <text x="445" y="141" text-anchor="middle" class="t">style lock</text>
+        <text x="445" y="158" text-anchor="middle" class="s">if declared</text>
+
+        <rect x="520" y="120" width="90" height="50" rx="6" class="box"/>
+        <text x="565" y="141" text-anchor="middle" class="t">unit gate</text>
+        <text x="565" y="158" text-anchor="middle" class="s">its own tests</text>
+
+        <rect x="640" y="120" width="100" height="50" rx="6" class="box"/>
+        <text x="690" y="141" text-anchor="middle" class="t">conformance</text>
+        <text x="690" y="158" text-anchor="middle" class="s">+ all prior units</text>
+
+        <rect x="770" y="120" width="110" height="50" rx="6" class="box"/>
+        <text x="825" y="141" text-anchor="middle" class="t">test quality</text>
+        <text x="825" y="158" text-anchor="middle" class="s">cov &#183; trace &#183; mutate</text>
+
+        <path d="M110 145 L138 145" class="ln" marker-end="url(#ah2)"/>
+        <path d="M240 145 L268 145" class="ln" marker-end="url(#ah2)"/>
+        <path d="M370 145 L398 145" class="ln" marker-end="url(#ah2)"/>
+        <path d="M490 145 L518 145" class="ln" marker-end="url(#ah2)"/>
+        <path d="M610 145 L638 145" class="ln" marker-end="url(#ah2)"/>
+        <path d="M740 145 L768 145" class="ln" marker-end="url(#ah2)"/>
+
+        <!-- checkpoint below -->
+        <rect x="770" y="220" width="110" height="50" rx="6" class="box acc"/>
+        <text x="825" y="241" text-anchor="middle" class="t">checkpoint</text>
+        <text x="825" y="258" text-anchor="middle" class="s">2 git commits</text>
+        <path d="M825 170 L825 218" class="ln acc" marker-end="url(#ahacc)"/>
+        <text x="836" y="198" class="acc">pass</text>
+        <text x="690" y="245" text-anchor="end" class="s">code commit, then metadata commit,</text>
+        <text x="690" y="260" text-anchor="end" class="s">into the module's own nested git repo</text>
+
+        <!-- feedback arcs above -->
+        <path d="M320 120 C 320 62, 190 62, 190 118" class="ln warn dash" marker-end="url(#ahw)"/>
+        <text x="255" y="104" text-anchor="middle" class="warn">patch_invalid</text>
+        <path d="M445 120 C 445 42, 190 42, 190 118" class="ln warn dash"/>
+        <path d="M565 120 C 565 22, 190 22, 190 118" class="ln warn dash"/>
+        <path d="M690 120 C 690 2, 190 2, 190 118" class="ln warn dash"/>
+        <text x="520" y="16" text-anchor="middle" class="warn">failed? retry once with the test output as feedback</text>
+      </svg>
